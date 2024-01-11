@@ -12,23 +12,31 @@ use rayon::prelude::*;
 
 use serde::{Serialize, Deserialize};
 
+///////////////////////////////////////////////////////////////////////////
+
+const HOST: &str = "pixelflut.uwu.industries:1234";
+
+
+
 struct Frame {
     width: usize,
     height: usize,
-    data: Box<[u8]>,
+    data: Box<[Color]>,
 }
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone, Copy)]
+struct Color(u8, u8, u8);
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Pixel {
     x: usize,
     y: usize,
-    v: u8,
+    v: Color
 }
 
 #[derive(Serialize, Deserialize)]
 enum FrameData {
     Delta(Vec<Pixel>),
-    Full(Vec<u8>),
+    Full(u16,u16,Vec<Color>),
     Empty
 }
 
@@ -49,6 +57,7 @@ impl Frame {
 
         let mut data = Vec::new();
         reader.read_to_end(&mut data)?;
+        let data = data.chunks(3).map(|c| Color(c[0], c[1], c[2])).collect::<Vec<_>>();
         Ok(Self {
             width,
             height,
@@ -87,7 +96,7 @@ impl Frame {
 
 impl Pixel {    
     fn to_string(&self) -> String {
-        format!("PX {} {} {:02x}{:02x}{:02x}\n", self.x+600, self.y, self.v, self.v, self.v)
+        format!("PX {} {} {:02x}{:02x}{:02x}\n", self.x+600, self.y, self.v.0, self.v.1, self.v.2)
     }
 }
 
@@ -108,7 +117,7 @@ fn extract_video_frames() -> std::io::Result<()>{
             decoder.format(),
             decoder.width(),
             decoder.height(),
-            ffmpeg::format::Pixel::GRAY8,
+            ffmpeg::format::Pixel::RGB24,
             decoder.width(),
             decoder.height(),
             Flags::BILINEAR,
@@ -173,7 +182,7 @@ fn compress_frames_to_file() {
                     let frame = Frame::from_file(&old_path).unwrap();            
             
                     let data = if i % 100 == 0 { // full frame every 100 frames to mitigate overwrites
-                        FrameData::Full(frame.data.to_vec())
+                        FrameData::Full(frame.width as u16, frame.height as u16, frame.data.to_vec())
                     } else {
                         FrameData::Delta(last_frame.as_ref()
                         .map(|lf| Frame::delta(lf, &frame)).unwrap())
@@ -181,7 +190,7 @@ fn compress_frames_to_file() {
             
                     let len = match &data {
                         FrameData::Delta(d) => d.len(),
-                        FrameData::Full(d) => d.len(),
+                        FrameData::Full(..,d) => d.len(),
                         FrameData::Empty => panic!("unreachable"),
                     };                
                     let data = if len == 0 {
@@ -237,10 +246,10 @@ fn main() {
             // get pixels
             let pixels = match frame_data {
                 FrameData::Delta(d) => d,
-                FrameData::Full(d) => {
+                FrameData::Full(w,h,d) => {
                     let frame = Frame {
-                        width: 480,
-                        height: 360,
+                        width: w as usize,
+                        height: h as usize,
                         data: d.into_boxed_slice(),
                     };
                     frame.to_pixels()
