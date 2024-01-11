@@ -4,16 +4,34 @@ use std::net::TcpStream;
 use std::sync::Arc;
 use std::thread;
 
+use ffmpeg_next as ffmpeg;
 use ffmpeg::frame::Video;
 use ffmpeg::software::scaling::{Flags, Context};
-use rayon::iter::{IntoParallelIterator, IndexedParallelIterator, ParallelIterator};
+
+use rayon::prelude::*;
+
 use serde::{Serialize, Deserialize};
-use ffmpeg_next as ffmpeg;
+
 struct Frame {
     width: usize,
     height: usize,
     data: Box<[u8]>,
 }
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Pixel {
+    x: usize,
+    y: usize,
+    v: u8,
+}
+
+#[derive(Serialize, Deserialize)]
+enum FrameData {
+    Delta(Vec<Pixel>),
+    Full(Vec<u8>),
+    Empty
+}
+
 
 impl Frame {
     fn from_file(path: &str) -> std::io::Result<Self> {
@@ -67,24 +85,12 @@ impl Frame {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct Pixel {
-    x: usize,
-    y: usize,
-    v: u8,
-}
-#[derive(Serialize, Deserialize)]
-enum FrameData {
-    Delta(Vec<Pixel>),
-    Full(Vec<u8>),
-    Empty
-}
-
 impl Pixel {    
     fn to_string(&self) -> String {
         format!("PX {} {} {:02x}{:02x}{:02x}\n", self.x+600, self.y, self.v, self.v, self.v)
     }
 }
+
 fn extract_video_frames() -> std::io::Result<()>{
     ffmpeg::init()?;
 
@@ -141,11 +147,12 @@ fn extract_video_frames() -> std::io::Result<()>{
 }
 fn compress_frames_to_file() {
     let mut last_frame: Option<Frame> = None;
-    
-    let mut file = File::create("frames.bin").unwrap();
+    std::fs::create_dir("bin-frames").unwrap_or_else(|_| {});    
     for i in 0..6571 {        
-        let path = format!("frames/frame{}.ppm", i);
-        let frame = Frame::from_file(&path).unwrap();            
+        let old_path = format!("frames/frame{}.ppm", i);
+        let new_path = format!("bin-frames/frame{}.ppm", i);
+        let mut file = File::create(new_path).unwrap();
+        let frame = Frame::from_file(&old_path).unwrap();            
 
         let data = if i % 100 == 0 { // full frame every 100 frames to mitigate overwrites
             FrameData::Full(frame.data.to_vec())
@@ -169,7 +176,8 @@ fn compress_frames_to_file() {
         };
         last_frame = Some(frame);
         bincode::serialize_into(&mut file, &data).unwrap();
-    }
+    }    
+    std::fs::remove_dir_all("frames").unwrap_or_else(|_| {});
 }
 
 
@@ -177,7 +185,7 @@ fn compress_frames_to_file() {
 const THREAD_COUNT: usize = 8;
 fn main() {   
     
-    if !std::path::Path::new("frames.bin").exists() {
+    if !std::path::Path::new("bin-frames").exists() {
         if !std::path::Path::new("frames").exists() {
             println!("extracting frames");
             extract_video_frames().unwrap();
