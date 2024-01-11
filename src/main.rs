@@ -250,7 +250,7 @@ fn main() {
     
             let len = pixels.len();
             if len != 0 {
-                println!("{:?}", pixels[300].to_string());
+                
                 // send pixels
                 let msgs = pixels.into_par_iter()
                     .map(|p| p.to_string())
