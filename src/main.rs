@@ -146,37 +146,40 @@ fn extract_video_frames() -> std::io::Result<()>{
     Ok(())
 }
 fn compress_frames_to_file() {
-    let mut last_frame: Option<Frame> = None;
-    std::fs::create_dir("bin-frames").unwrap_or_else(|_| {});    
-    for i in 0..6571 {        
-        let old_path = format!("frames/frame{}.ppm", i);
-        let new_path = format!("bin-frames/frame{}.ppm", i);
-        let mut file = File::create(new_path).unwrap();
-        let frame = Frame::from_file(&old_path).unwrap();            
-
-        let data = if i % 100 == 0 { // full frame every 100 frames to mitigate overwrites
-            FrameData::Full(frame.data.to_vec())
-        } else {
-            FrameData::Delta(last_frame.as_ref()
-            .map(|lf| Frame::delta(lf, &frame)).unwrap())
-        };
-
-        let len = match &data {
-            FrameData::Delta(d) => d.len(),
-            FrameData::Full(d) => d.len(),
-            FrameData::Empty => panic!("unreachable"),
-        };    
-
-        println!("frame: {}", i);
-        let data = if len == 0 {
-            FrameData::Empty            
+    std::fs::create_dir("comp-frames").unwrap_or_else(|_| {}); 
+    (0..6571).into_par_iter().chunks(100).for_each(|idxs| {
+        let mut last_frame: Option<Frame> = None;
+        for i in idxs {        
+            let old_path = format!("frames/frame{}.ppm", i);
+            let new_path = format!("comp-frames/frame{}.bin", i);
+            let mut file = File::create(new_path).unwrap();
+            let frame = Frame::from_file(&old_path).unwrap();            
+    
+            let data = if i % 100 == 0 { // full frame every 100 frames to mitigate overwrites
+                FrameData::Full(frame.data.to_vec())
+            } else {
+                FrameData::Delta(last_frame.as_ref()
+                .map(|lf| Frame::delta(lf, &frame)).unwrap())
+            };
+    
+            let len = match &data {
+                FrameData::Delta(d) => d.len(),
+                FrameData::Full(d) => d.len(),
+                FrameData::Empty => panic!("unreachable"),
+            };    
+    
+            println!("frame: {}", i);
+            let data = if len == 0 {
+                FrameData::Empty            
+            }
+            else {
+                data
+            };
+            last_frame = Some(frame);
+            bincode::serialize_into(&mut file, &data).unwrap();
         }
-        else {
-            data
-        };
-        last_frame = Some(frame);
-        bincode::serialize_into(&mut file, &data).unwrap();
-    }    
+    }); 
+        
     std::fs::remove_dir_all("frames").unwrap_or_else(|_| {});
 }
 
@@ -185,7 +188,7 @@ fn compress_frames_to_file() {
 const THREAD_COUNT: usize = 8;
 fn main() {   
     
-    if !std::path::Path::new("bin-frames").exists() {
+    if !std::path::Path::new("comp-frames").exists() {
         if !std::path::Path::new("frames").exists() {
             println!("extracting frames");
             extract_video_frames().unwrap();
@@ -195,11 +198,12 @@ fn main() {
         compress_frames_to_file();
     }
     loop {
-        let file = File::open("frames.bin").unwrap();
-        let mut reader = BufReader::new(file);    
+        
         let stream = Arc::new(TcpStream::connect("pixelflut.uwu.industries:1234").unwrap());
-            
+        
         for i in 0..6571 {
+            let file = File::open(format!("comp-frames/frame{}.bin",i)).unwrap();
+            let mut reader = BufReader::new(file);    
             // sleep thread
             let sleep = thread::spawn(|| {
                 thread::sleep(std::time::Duration::from_millis(33));
