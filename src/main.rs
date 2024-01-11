@@ -267,7 +267,7 @@ fn main() {
         std::fs::write("cache_id", &args.input).unwrap();        
     }
     
-    let frame_count = std::fs::read_dir("comp-frames").unwrap().count();
+    let frame_count = std::fs::read_dir(COMP_FRAMES_DIR).unwrap().count();
 
 
 
