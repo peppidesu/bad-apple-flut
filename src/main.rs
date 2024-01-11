@@ -151,7 +151,7 @@ fn compress_frames_to_file() {
     let pthread_counter = Arc::clone(&counter);
     let progress_thread = thread::spawn(move || {
         loop {
-            let count = pthread_counter.load(std::sync::atomic::Ordering::SeqCst);
+            let count = pthread_counter.load(std::sync::atomic::Ordering::Relaxed);
             println!("{} / 6571", count);
             if count == 6571 {
                 break;
@@ -195,7 +195,7 @@ fn compress_frames_to_file() {
                     
                     // increment counter
                     let counter = Arc::clone(&counter);
-                    counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
             });
         }
