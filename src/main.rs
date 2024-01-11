@@ -233,10 +233,14 @@ fn compress_frames_to_file() {
     });    
     progress_thread.join().unwrap();    
 }
+fn gen_cache_id() -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    "cache_id".hash(&mut hasher);
+    hasher.finish()
+}
 
 fn is_cache_valid(filename: &str) -> std::io::Result<bool> {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    filename.hash(&mut hasher);
+    let hash = gen_cache_id();
 
     let cache_id = File::open("cache_id")?;
     let mut reader = BufReader::new(cache_id);
@@ -247,7 +251,7 @@ fn is_cache_valid(filename: &str) -> std::io::Result<bool> {
             std::io::ErrorKind::InvalidData, "invalid cache id"
         ))?;
 
-    Ok(hasher.finish() == old_hash)
+    Ok(hash == old_hash)
 }
 
 const THREAD_COUNT: usize = 8;
