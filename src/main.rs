@@ -280,7 +280,7 @@ fn main() {
         let stream = Arc::new(TcpStream::connect("pixelflut.uwu.industries:1234").unwrap());
         
         for i in 0..frame_count {
-            let file = File::open(format!("comp-frames/frame{}.bin",i)).unwrap();
+            let file = File::open(format!("{COMP_FRAMES_DIR}/frame{}.bin",i)).unwrap();
             let mut reader = BufReader::new(file);    
             // sleep thread
             let sleep = thread::spawn(|| {
