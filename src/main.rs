@@ -1,4 +1,5 @@
 use std::fs::File;
+use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader, BufWriter, Write, Read};
 use std::net::TcpStream;
 use std::sync::Arc;
@@ -11,12 +12,24 @@ use ffmpeg::software::scaling::{Flags, Context};
 use rayon::prelude::*;
 
 use serde::{Serialize, Deserialize};
-
+use clap::Parser;
 ///////////////////////////////////////////////////////////////////////////
 
 const HOST: &str = "pixelflut.uwu.industries:1234";
+const FRAMES_DIR: &str = "cache/frames";
+const COMP_FRAMES_DIR: &str = "cache/comp-frames";
 
-
+#[derive(Parser)]
+struct Args {
+    #[clap(short, long)]
+    input: String,
+    #[clap(short)]
+    x: Option<usize>,
+    #[clap(short)]
+    y: Option<usize>,
+    #[clap(long)]
+    nocache: bool,
+}
 
 struct Frame {
     width: usize,
@@ -73,7 +86,9 @@ impl Frame {
             .zip(new.data.into_par_iter())
             .enumerate()
             .filter_map(|(i, (old_val, new_val))| {
-            if old_val != new_val {
+            if old_val.0.abs_diff(new_val.0) as usize > 20
+            || old_val.1.abs_diff(new_val.1) as usize > 20
+            || old_val.2.abs_diff(new_val.2) as usize > 20 {
                 let x = i % old.width;
                 let y = i / old.width;
                 Some(Pixel { x, y, v: *new_val })
@@ -95,15 +110,17 @@ impl Frame {
 }
 
 impl Pixel {    
-    fn to_string(&self) -> String {
-        format!("PX {} {} {:02x}{:02x}{:02x}\n", self.x+600, self.y, self.v.0, self.v.1, self.v.2)
+    fn to_pixelflut_string(&self, offset_x: usize, y: usize) -> String {
+        format!("PX {} {} {:02x}{:02x}{:02x}\n", self.x+offset_x, self.y+y, self.v.0, self.v.1, self.v.2)
     }
 }
 
-fn extract_video_frames() -> std::io::Result<()>{
+fn extract_video_frames(args: &Args) -> std::io::Result<()>{
+    std::fs::create_dir_all(FRAMES_DIR).unwrap_or_else(|_| {});
+
     ffmpeg::init()?;
 
-    if let Ok(mut ictx) = ffmpeg::format::input(&std::env::args().nth(1).expect("Please provide an input file to generate frame data")) {
+    if let Ok(mut ictx) = ffmpeg::format::input(&args.input) {
         let input = ictx
             .streams()
             .best(ffmpeg::media::Type::Video)
@@ -124,20 +141,22 @@ fn extract_video_frames() -> std::io::Result<()>{
         )?;
 
         let mut frame_index = 0;
-
+        let mut file_index = 0;
         let mut receive_and_process_decoded_frames =
             |decoder: &mut ffmpeg::decoder::Video| -> std::io::Result<()> {
                 let mut decoded = Video::empty();
-                while decoder.receive_frame(&mut decoded).is_ok() {
+                while decoder.receive_frame(&mut decoded).is_ok() {                    
                     let mut frame = Video::empty();
-                    scaler.run(&decoded, &mut frame)?;
-                    
-                    std::fs::create_dir("frames").unwrap_or_else(|_| {});
-                    let mut file = File::create(format!("frames/frame{}.ppm", frame_index))?;
-
+                    scaler.run(&decoded, &mut frame)?;                                        
+                    if frame_index % 2 == 0 {
+                        frame_index += 1;
+                        continue;
+                    }
+                    let mut file = File::create(format!("{FRAMES_DIR}/frame{file_index}.ppm"))?;                    
                     file.write_all(format!("P6\n{} {}\n255\n", frame.width(), frame.height()).as_bytes())?;
                     file.write_all(frame.data(0))?;
                     frame_index += 1;
+                    file_index += 1;
                 }
                 Ok(())
             };
@@ -155,20 +174,22 @@ fn extract_video_frames() -> std::io::Result<()>{
     Ok(())
 }
 fn compress_frames_to_file() {
-    std::fs::create_dir("comp-frames").unwrap_or_else(|_| {}); 
+    std::fs::create_dir_all(COMP_FRAMES_DIR).unwrap_or_else(|_| {}); 
+
     let counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let pthread_counter = Arc::clone(&counter);
+    let frame_count = std::fs::read_dir(FRAMES_DIR).unwrap().count();
     let progress_thread = thread::spawn(move || {
         loop {
             let count = pthread_counter.load(std::sync::atomic::Ordering::Relaxed);
-            println!("{} / 6571", count);
-            if count == 6571 {
+            println!("{} / {}", count, frame_count);
+            if count == frame_count {
                 break;
             }
             thread::sleep(std::time::Duration::from_millis(500));
         }
     });
-    let ranges = (0..6571).into_par_iter().chunks(100).collect::<Vec<_>>();
+    let ranges = (0..frame_count).into_par_iter().chunks(100).collect::<Vec<_>>();
 
     rayon::scope(|s| {
         for idxs in ranges {
@@ -176,10 +197,11 @@ fn compress_frames_to_file() {
             s.spawn(move |_| {
                 let mut last_frame: Option<Frame> = None;
                 for i in idxs {        
-                    let old_path = format!("frames/frame{}.ppm", i);
-                    let new_path = format!("comp-frames/frame{}.bin", i);
+                    let old_path = format!("{FRAMES_DIR}/frame{i}.ppm");
+                    let new_path = format!("{COMP_FRAMES_DIR}/frame{i}.bin");
                     let mut file = File::create(new_path).unwrap();
-                    let frame = Frame::from_file(&old_path).unwrap();            
+                    let frame = Frame::from_file(&old_path).expect(
+                        format!("failed to read frame {}", i).as_str());            
             
                     let data = if i % 100 == 0 { // full frame every 100 frames to mitigate overwrites
                         FrameData::Full(frame.width as u16, frame.height as u16, frame.data.to_vec())
@@ -209,35 +231,56 @@ fn compress_frames_to_file() {
             });
         }
     });    
-    progress_thread.join().unwrap();
-        
-    std::fs::remove_dir_all("frames").unwrap_or_else(|_| {});
+    progress_thread.join().unwrap();    
 }
 
+fn is_cache_valid(filename: &str) -> std::io::Result<bool> {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    filename.hash(&mut hasher);
 
+    let cache_id = File::open("cache_id")?;
+    let mut reader = BufReader::new(cache_id);
+    let mut line = String::new();
+    reader.read_line(&mut line)?;
+    let old_hash = line.parse::<u64>()
+        .map_err(|_| std::io::Error::new(
+            std::io::ErrorKind::InvalidData, "invalid cache id"
+        ))?;
+
+    Ok(hasher.finish() == old_hash)
+}
 
 const THREAD_COUNT: usize = 8;
 fn main() {   
-    
-    if !std::path::Path::new("comp-frames").exists() {
-        if !std::path::Path::new("frames").exists() {
-            println!("extracting frames");
-            extract_video_frames().unwrap();
-        }
-        println!("applying temporal frame compression");
-        thread::sleep(std::time::Duration::from_millis(1000));
+    let args = Args::parse();
+    if !is_cache_valid(&args.input).unwrap_or(false) 
+    || !std::path::Path::new("comp-frames").exists() 
+    || !std::path::Path::new("frames").exists()
+    ||  args.nocache {
+        std::fs::remove_dir_all(FRAMES_DIR).unwrap_or_else(|_| {});
+        std::fs::remove_dir_all(COMP_FRAMES_DIR).unwrap_or_else(|_| {});
+        std::fs::remove_file("cache_id").unwrap_or_else(|_| {});
+        println!("extracting frames");
+        extract_video_frames(&args).unwrap();
+        println!("compressing frames");
         compress_frames_to_file();
+        std::fs::write("cache_id", &args.input).unwrap();        
     }
+    
+    let frame_count = std::fs::read_dir("comp-frames").unwrap().count();
+
+
+
     loop {
         
         let stream = Arc::new(TcpStream::connect("pixelflut.uwu.industries:1234").unwrap());
         
-        for i in 0..6571 {
+        for i in 0..frame_count {
             let file = File::open(format!("comp-frames/frame{}.bin",i)).unwrap();
             let mut reader = BufReader::new(file);    
             // sleep thread
             let sleep = thread::spawn(|| {
-                thread::sleep(std::time::Duration::from_millis(33));
+                thread::sleep(std::time::Duration::from_millis(66));
             });
     
             // read frame
@@ -262,7 +305,10 @@ fn main() {
                 
                 // send pixels
                 let msgs = pixels.into_par_iter()
-                    .map(|p| p.to_string())
+                    .map(|p| p.to_pixelflut_string(
+                        args.x.unwrap_or(0), 
+                        args.y.unwrap_or(0))
+                    )
                     .chunks(len.div_ceil(THREAD_COUNT))
                     .map(|c| c.join(""))
                     .collect::<Vec<_>>();

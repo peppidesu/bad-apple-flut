@@ -1,4 +1,3 @@
 /target
-bad-apple.mp4
-/frames
-/comp-frames
+/*.mp4
+/cache/
