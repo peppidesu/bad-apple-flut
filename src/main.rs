@@ -268,7 +268,7 @@ fn main() {
         extract_video_frames(&args).unwrap();
         println!("compressing frames");
         compress_frames_to_file();
-        std::fs::write("cache_id", &args.input).unwrap();        
+        std::fs::write("cache_id", gen_cache_id().to_string()).unwrap();        
     }
     
     let frame_count = std::fs::read_dir(COMP_FRAMES_DIR).unwrap().count();
