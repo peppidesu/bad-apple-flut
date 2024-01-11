@@ -108,7 +108,7 @@ fn extract_video_frames() -> std::io::Result<()>{
             decoder.format(),
             decoder.width(),
             decoder.height(),
-            ffmpeg::format::Pixel::RGB24,
+            ffmpeg::format::Pixel::GRAY8,
             decoder.width(),
             decoder.height(),
             Flags::BILINEAR,
@@ -147,38 +147,60 @@ fn extract_video_frames() -> std::io::Result<()>{
 }
 fn compress_frames_to_file() {
     std::fs::create_dir("comp-frames").unwrap_or_else(|_| {}); 
-    (0..6571).into_par_iter().chunks(100).for_each(|idxs| {
-        let mut last_frame: Option<Frame> = None;
-        for i in idxs {        
-            let old_path = format!("frames/frame{}.ppm", i);
-            let new_path = format!("comp-frames/frame{}.bin", i);
-            let mut file = File::create(new_path).unwrap();
-            let frame = Frame::from_file(&old_path).unwrap();            
-    
-            let data = if i % 100 == 0 { // full frame every 100 frames to mitigate overwrites
-                FrameData::Full(frame.data.to_vec())
-            } else {
-                FrameData::Delta(last_frame.as_ref()
-                .map(|lf| Frame::delta(lf, &frame)).unwrap())
-            };
-    
-            let len = match &data {
-                FrameData::Delta(d) => d.len(),
-                FrameData::Full(d) => d.len(),
-                FrameData::Empty => panic!("unreachable"),
-            };    
-    
-            println!("frame: {}", i);
-            let data = if len == 0 {
-                FrameData::Empty            
+    let counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let pthread_counter = Arc::clone(&counter);
+    let progress_thread = thread::spawn(move || {
+        loop {
+            let count = pthread_counter.load(std::sync::atomic::Ordering::SeqCst);
+            println!("{} / 6571", count);
+            if count == 6571 {
+                break;
             }
-            else {
-                data
-            };
-            last_frame = Some(frame);
-            bincode::serialize_into(&mut file, &data).unwrap();
+            thread::sleep(std::time::Duration::from_millis(500));
         }
-    }); 
+    });
+    let ranges = (0..6571).into_par_iter().chunks(100).collect::<Vec<_>>();
+
+    rayon::scope(|s| {
+        for idxs in ranges {
+            let counter = Arc::clone(&counter);
+            s.spawn(move |_| {
+                let mut last_frame: Option<Frame> = None;
+                for i in idxs {        
+                    let old_path = format!("frames/frame{}.ppm", i);
+                    let new_path = format!("comp-frames/frame{}.bin", i);
+                    let mut file = File::create(new_path).unwrap();
+                    let frame = Frame::from_file(&old_path).unwrap();            
+            
+                    let data = if i % 100 == 0 { // full frame every 100 frames to mitigate overwrites
+                        FrameData::Full(frame.data.to_vec())
+                    } else {
+                        FrameData::Delta(last_frame.as_ref()
+                        .map(|lf| Frame::delta(lf, &frame)).unwrap())
+                    };
+            
+                    let len = match &data {
+                        FrameData::Delta(d) => d.len(),
+                        FrameData::Full(d) => d.len(),
+                        FrameData::Empty => panic!("unreachable"),
+                    };                
+                    let data = if len == 0 {
+                        FrameData::Empty            
+                    }
+                    else {
+                        data
+                    };
+                    last_frame = Some(frame);
+                    bincode::serialize_into(&mut file, &data).unwrap();
+                    
+                    // increment counter
+                    let counter = Arc::clone(&counter);
+                    counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
+            });
+        }
+    });    
+    progress_thread.join().unwrap();
         
     std::fs::remove_dir_all("frames").unwrap_or_else(|_| {});
 }
@@ -228,6 +250,7 @@ fn main() {
     
             let len = pixels.len();
             if len != 0 {
+                println!("{:?}", pixels[300].to_string());
                 // send pixels
                 let msgs = pixels.into_par_iter()
                     .map(|p| p.to_string())
