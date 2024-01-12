@@ -26,10 +26,17 @@ const THREAD_COUNT: usize = 12;
 struct Args {
     #[clap(short, long)]
     input: String,
+
     #[clap(short)]
-    x: Option<usize>,
+    x_offset: Option<usize>,
     #[clap(short)]
-    y: Option<usize>,
+    y_offset: Option<usize>,
+    
+    #[clap(short)]
+    width: Option<u32>,
+    #[clap(short)]
+    height: Option<u32>,
+    
     #[clap(long)]
     nocache: bool,
 }
@@ -63,13 +70,13 @@ struct Config {
 
 }
 
-fn rgb2yuv(r: u8, g: u8, b: u8) -> (u16, u16, u16) {
+fn rgb2yuv(r: u8, g: u8, b: u8) -> (u8, u8, u8) {
     let l = 0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32;
     let u = -0.14713 * r as f32 - 0.28886 * g as f32 + 0.436 * b as f32;
     let v = 0.615 * r as f32 - 0.51499 * g as f32 - 0.10001 * b as f32;
     
     
-    return (l as u16, u as u16, v as u16)
+    return (l as u8, (u+128.0) as u8, (v+128.0) as u8 )
 }
 
 impl Frame {
@@ -92,19 +99,6 @@ impl Frame {
             let r = c[0];
             let g = c[1];
             let b = c[2];
-            
-            // let l = 0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32;
-            // let u = -0.14713 * r as f32 - 0.28886 * g as f32 + 0.436 * b as f32;
-            // let v = 0.615 * r as f32 - 0.51499 * g as f32 - 0.10001 * b as f32;
-            
-            // // chroma quantization
-            // let l = (l as u8 / 8) * 8;
-            // let u = (u as u8 / 16) * 16;
-            // let v = (v as u8 / 16) * 16;
-
-            // let r = (l as f32 + 1.13983 * v as f32) as u8;
-            // let g = (l as f32 - 0.39465 * u as f32 - 0.58060 * v as f32) as u8;
-            // let b = (l as f32 + 2.03211 * u as f32) as u8;
 
             Color(r,g,b)
         }).collect::<Vec<_>>();
@@ -127,8 +121,8 @@ impl Frame {
                 // temporal chroma subsampling
                 let (y1,u1,v1) = rgb2yuv(old_val.0, old_val.1, old_val.2);
                 let (y2,u2,v2) = rgb2yuv(new_val.0, new_val.1, new_val.2);
-                
-                if y1.abs_diff(y2) * 2 + u1.abs_diff(u2) + v1.abs_diff(v2) > 10 {
+                let threshold = (1.4 - (y1 as f32 / 255.0).powi(2)) * 15.0;
+                if y1.abs_diff(y2) > 10 || u1.abs_diff(u2) as u16 + v1.abs_diff(v2) as u16 > threshold as u16 {
                     let x = i % old.width;
                     let y = i / old.width;
                     Some(Pixel { x, y, color: *new_val })
@@ -205,8 +199,8 @@ fn extract_video_frames(args: &Args) -> std::io::Result<()> {
             decoder.width(),
             decoder.height(),
             ffmpeg::format::Pixel::RGB24,
-            decoder.width(),
-            decoder.height(),
+            args.width.unwrap_or(decoder.width()),
+            args.height.unwrap_or(decoder.height()),
             Flags::BILINEAR,
         )?;
 
@@ -269,7 +263,7 @@ fn progress_tracker(counter: Arc<std::sync::atomic::AtomicUsize>, max: usize, de
         let mut av_rate = 0.1;
         let mut warmup = 0;
         
-        crossterm::execute!(std::io::stdout(), crossterm::cursor::Hide).unwrap();
+        
         let cursorpos = crossterm::cursor::position().unwrap();
 
         let print_over_line = |str| {
@@ -460,14 +454,14 @@ fn main() {
                 // send pixels
                 let msgs = pixels.into_par_iter()
                     .map(|p| p.to_pixelflut_string(
-                        args.x.unwrap_or(0), 
-                        args.y.unwrap_or(0))
+                        args.x_offset.unwrap_or(0), 
+                        args.y_offset.unwrap_or(0))
                     )
                     .chunks(len.div_ceil(THREAD_COUNT))
                     .map(|c| c.join(""))
                     .collect::<Vec<_>>();
     
-                rayon::scope(|s| {
+                thread_pool.scope(|s| {
                     for msg in msgs {
                         let stream = Arc::clone(&stream);
                         s.spawn(move |_| {
