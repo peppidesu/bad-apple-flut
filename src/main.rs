@@ -11,6 +11,8 @@ use ffmpeg::software::scaling::{Flags, Context};
 
 use rayon::prelude::*;
 
+
+
 use serde::{Serialize, Deserialize};
 use clap::Parser;
 ///////////////////////////////////////////////////////////////////////////
@@ -54,6 +56,11 @@ enum FrameData {
     Delta(Vec<Pixel>),
     Full(u16,u16,Vec<Color>),
     Empty
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct Config {
+
 }
 
 fn rgb2yuv(r: u8, g: u8, b: u8) -> (u16, u16, u16) {
@@ -121,7 +128,7 @@ impl Frame {
                 let (y1,u1,v1) = rgb2yuv(old_val.0, old_val.1, old_val.2);
                 let (y2,u2,v2) = rgb2yuv(new_val.0, new_val.1, new_val.2);
                 
-                if y1.abs_diff(y2) * 2 + u1.abs_diff(u2) + v1.abs_diff(v2) > 15 {
+                if y1.abs_diff(y2) * 2 + u1.abs_diff(u2) + v1.abs_diff(v2) > 10 {
                     let x = i % old.width;
                     let y = i / old.width;
                     Some(Pixel { x, y, color: *new_val })
@@ -173,7 +180,8 @@ impl Pixel {
     }
 }
 
-fn extract_video_frames(args: &Args) -> std::io::Result<()>{
+fn extract_video_frames(args: &Args) -> std::io::Result<()> {
+    println!("Extracting frames ...");
     std::fs::create_dir_all(FRAMES_DIR).unwrap_or_else(|_| {});
 
     ffmpeg::init()?;
@@ -258,17 +266,28 @@ fn progress_tracker(counter: Arc<std::sync::atomic::AtomicUsize>, max: usize, de
     thread::spawn(move || {
         let last_count = counter.load(std::sync::atomic::Ordering::Relaxed);
         let start = std::time::Instant::now();
-        let mut av_rate = 0.01;
+        let mut av_rate = 0.1;
         let mut warmup = 0;
+        
+        crossterm::execute!(std::io::stdout(), crossterm::cursor::Hide).unwrap();
+        let cursorpos = crossterm::cursor::position().unwrap();
+
+        let print_over_line = |str| {
+            crossterm::execute!(std::io::stdout(), crossterm::cursor::MoveTo(0, cursorpos.1)).unwrap();
+            // clear
+            crossterm::execute!(std::io::stdout(), crossterm::terminal::Clear(crossterm::terminal::ClearType::CurrentLine)).unwrap();
+            crossterm::execute!(std::io::stdout(), crossterm::style::Print(str)).unwrap();            
+        };        
+
         loop {
             let count = counter.load(std::sync::atomic::Ordering::Relaxed);
             warmup += 1;
             if count == max {
-                println!("Done.");
+                println!("\nDone.");
                 break;
             }
             if warmup < 5 {
-                println!("{} / {} frames written.", count, max);                
+                print_over_line(format!("{} / {} {}", count, max, descr));                
             }
             else {
                 let elapsed = start.elapsed().as_secs_f64();
@@ -282,11 +301,11 @@ fn progress_tracker(counter: Arc<std::sync::atomic::AtomicUsize>, max: usize, de
                 let mins = ((eta - hrs as f64 * 3600.0) / 60.0) as i32;
                 let secs = (eta - hrs as f64 * 3600.0 - mins as f64 * 60.0) as i32;
                 if hrs > 0 {
-                    println!("{} / {} {} | ETA: {:}h{:02}m{:02}s", count, max, descr, hrs, mins, secs);
+                    print_over_line(format!("{} / {} {} | ETA: {:}h{:02}m{:02}s", count, max, descr, hrs, mins, secs));
                 } else if mins > 0 {
-                    println!("{} / {} {} | ETA: {:}m{:02}s", count, max, descr, mins, secs);
+                    print_over_line(format!("{} / {} {} | ETA: {:}m{:02}s", count, max, descr, mins, secs));
                 } else {
-                    println!("{} / {} {} | ETA: {:}s", count, max, descr,  secs);
+                    print_over_line(format!("{} / {} {} | ETA: {:}s", count, max, descr,  secs));
                 }
             }
     
@@ -297,8 +316,8 @@ fn progress_tracker(counter: Arc<std::sync::atomic::AtomicUsize>, max: usize, de
 }
 
 fn compress_frames_to_file() {
-    std::fs::create_dir_all(COMP_FRAMES_DIR).unwrap_or_else(|_| {}); 
-
+    println!("Compressing frames ...");
+    
     let mut frame_data_vec = Vec::new();
     let mut last_frame: Option<Frame> = None;
     let total_frames = std::fs::read_dir(FRAMES_DIR).unwrap().count();
@@ -336,7 +355,10 @@ fn compress_frames_to_file() {
 
     let counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
-    println!("Writing frames to disk");
+    println!("Writing frames to disk ...");
+
+    std::fs::create_dir_all(COMP_FRAMES_DIR).unwrap_or_else(|_| {}); 
+    
     let progress = progress_tracker(Arc::clone(&counter), total_frames, "frames written".to_string());
 
     let thread_pool = rayon::ThreadPoolBuilder::new()
@@ -386,10 +408,8 @@ fn main() {
     ||  args.nocache {
         std::fs::remove_dir_all(FRAMES_DIR).unwrap_or_else(|_| {});
         std::fs::remove_dir_all(COMP_FRAMES_DIR).unwrap_or_else(|_| {});
-        std::fs::remove_file("cache_id").unwrap_or_else(|_| {});
-        println!("extracting frames");
-        extract_video_frames(&args).unwrap();
-        println!("compressing frames");
+        std::fs::remove_file("cache_id").unwrap_or_else(|_| {});        
+        extract_video_frames(&args).unwrap();        
         compress_frames_to_file();
         std::fs::write("cache_id", gen_cache_id(&args.input).to_string()).unwrap();        
     }
@@ -404,9 +424,10 @@ fn main() {
         .build()
         .unwrap();
 
+    println!("Playing video on {HOST}");
     loop {
         
-        let stream = Arc::new(TcpStream::connect("pixelflut.uwu.industries:1234").unwrap());
+        let stream = Arc::new(TcpStream::connect(HOST).unwrap());
         
         for i in 0..frame_count {
             let file = File::open(format!("{COMP_FRAMES_DIR}/frame{}.bin",i)).unwrap();
