@@ -32,9 +32,9 @@ struct Args {
     #[clap(short)]
     y_offset: Option<usize>,
     
-    #[clap(short)]
+    #[clap(long)]
     width: Option<u32>,
-    #[clap(short)]
+    #[clap(long)]
     height: Option<u32>,
     
     #[clap(long)]
