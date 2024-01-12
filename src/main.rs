@@ -19,7 +19,7 @@ use clap::{Parser, ValueEnum};
 
 const HOST: &str = "pixelflut.uwu.industries:1234";
 const FRAMES_DIR: &str = "cache/frames";
-const THREAD_COUNT: usize = 6;
+const THREAD_COUNT: usize = 12;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq,ValueEnum)]
 enum CompressionLevel {
@@ -36,9 +36,9 @@ impl CompressionLevel {
         match self {
             Self::AirstrikeMode => 0,
             Self::None => 0,
-            Self::Low => 4,
-            Self::Medium => 16,
-            Self::High => 24,
+            Self::Low => 5,
+            Self::Medium => 10,
+            Self::High => 20,
             Self::TrashCompactor => 64,
         }
     }
@@ -47,10 +47,10 @@ impl CompressionLevel {
         let t = match self {
             Self::AirstrikeMode => 0.0,
             Self::None => 0.0,
-            Self::Low => (1.0 - y) * 12.0,
-            Self::Medium => (1.0 - y.powi(2) * 0.85) * 24.0,
+            Self::Low => (1.0 - y) * 10.0,
+            Self::Medium => (1.0 - y.powi(2) * 0.85) * 20.0,
             Self::High => (1.0 - y.powi(2) * 0.75) * 48.0,
-            Self::TrashCompactor => (1.0 - y.powi(2)) * 96.0,
+            Self::TrashCompactor => 96.0,
         };
         t as u16
     }
