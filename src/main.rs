@@ -3,7 +3,7 @@ use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader, BufWriter, Write, Read};
 use std::net::TcpStream;
 use std::sync::Arc;
-use std::thread;
+use std::thread::{self, JoinHandle};
 
 use ffmpeg_next as ffmpeg;
 use ffmpeg::frame::Video;
@@ -18,6 +18,7 @@ use clap::Parser;
 const HOST: &str = "pixelflut.uwu.industries:1234";
 const FRAMES_DIR: &str = "cache/frames";
 const COMP_FRAMES_DIR: &str = "cache/comp-frames";
+const THREAD_COUNT: usize = 12;
 
 #[derive(Parser)]
 struct Args {
@@ -31,28 +32,38 @@ struct Args {
     nocache: bool,
 }
 
+#[derive(Debug, Clone)]
 struct Frame {
     width: usize,
     height: usize,
     data: Box<[Color]>,
 }
+
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone, Copy)]
 struct Color(u8, u8, u8);
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone, Copy)]
 struct Pixel {
     x: usize,
     y: usize,
-    v: Color
+    color: Color
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 enum FrameData {
     Delta(Vec<Pixel>),
     Full(u16,u16,Vec<Color>),
     Empty
 }
 
+fn rgb2yuv(r: u8, g: u8, b: u8) -> (u16, u16, u16) {
+    let l = 0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32;
+    let u = -0.14713 * r as f32 - 0.28886 * g as f32 + 0.436 * b as f32;
+    let v = 0.615 * r as f32 - 0.51499 * g as f32 - 0.10001 * b as f32;
+    
+    
+    return (l as u16, u as u16, v as u16)
+}
 
 impl Frame {
     fn from_file(path: &str) -> std::io::Result<Self> {
@@ -70,7 +81,26 @@ impl Frame {
 
         let mut data = Vec::new();
         reader.read_to_end(&mut data)?;
-        let data = data.chunks(3).map(|c| Color(c[0], c[1], c[2])).collect::<Vec<_>>();
+        let data = data.chunks(3).map(|c| {
+            let r = c[0];
+            let g = c[1];
+            let b = c[2];
+            
+            // let l = 0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32;
+            // let u = -0.14713 * r as f32 - 0.28886 * g as f32 + 0.436 * b as f32;
+            // let v = 0.615 * r as f32 - 0.51499 * g as f32 - 0.10001 * b as f32;
+            
+            // // chroma quantization
+            // let l = (l as u8 / 8) * 8;
+            // let u = (u as u8 / 16) * 16;
+            // let v = (v as u8 / 16) * 16;
+
+            // let r = (l as f32 + 1.13983 * v as f32) as u8;
+            // let g = (l as f32 - 0.39465 * u as f32 - 0.58060 * v as f32) as u8;
+            // let b = (l as f32 + 2.03211 * u as f32) as u8;
+
+            Color(r,g,b)
+        }).collect::<Vec<_>>();
         Ok(Self {
             width,
             height,
@@ -86,24 +116,52 @@ impl Frame {
             .zip(new.data.into_par_iter())
             .enumerate()
             .filter_map(|(i, (old_val, new_val))| {
-            if old_val.0.abs_diff(new_val.0) as usize > 20
-            || old_val.1.abs_diff(new_val.1) as usize > 20
-            || old_val.2.abs_diff(new_val.2) as usize > 20 {
-                let x = i % old.width;
-                let y = i / old.width;
-                Some(Pixel { x, y, v: *new_val })
-            } else {
-                None
-            }
-        }).collect()
+
+                // temporal chroma subsampling
+                let (y1,u1,v1) = rgb2yuv(old_val.0, old_val.1, old_val.2);
+                let (y2,u2,v2) = rgb2yuv(new_val.0, new_val.1, new_val.2);
+                
+                if y1.abs_diff(y2) * 2 + u1.abs_diff(u2) + v1.abs_diff(v2) > 15 {
+                    let x = i % old.width;
+                    let y = i / old.width;
+                    Some(Pixel { x, y, color: *new_val })
+                } else {
+                    None
+                }
+            })
+            .collect()
     } 
+    fn apply_pixels(&self, pixels: &Vec<Pixel>) -> Self {
+        let mut data = self.data.clone();
+        for p in pixels {
+            let i = p.y * self.width + p.x;
+            data[i] = p.color;
+        }
+        Self {
+            width: self.width,
+            height: self.height,
+            data,
+        }
+    }
+    fn apply_frame_data(&self, data: &FrameData) -> Self {
+        match data {
+            FrameData::Delta(d) => self.apply_pixels(d),
+            FrameData::Full(w,h,d) => Self {
+                width: *w as usize,
+                height: *h as usize,
+                data: d.clone().into(),
+            },
+            FrameData::Empty => self.clone(),
+        }
+    }
+
     fn to_pixels(&self) -> Vec<Pixel> {
         self.data.into_par_iter()
             .enumerate()
             .map(|(i, v)| {
                 let x = i % self.width;
                 let y = i / self.width;
-                Pixel { x, y, v: *v }
+                Pixel { x, y, color: *v }
             })
             .collect()
     }
@@ -111,7 +169,7 @@ impl Frame {
 
 impl Pixel {    
     fn to_pixelflut_string(&self, offset_x: usize, y: usize) -> String {
-        format!("PX {} {} {:02x}{:02x}{:02x}\n", self.x+offset_x, self.y+y, self.v.0, self.v.1, self.v.2)
+        format!("PX {} {} {:02x}{:02x}{:02x}\n", self.x+offset_x, self.y+y, self.color.0, self.color.1, self.color.2)
     }
 }
 
@@ -126,7 +184,11 @@ fn extract_video_frames(args: &Args) -> std::io::Result<()>{
             .best(ffmpeg::media::Type::Video)
             .ok_or(ffmpeg::Error::StreamNotFound)?;
         let video_stream_index = input.index();
-
+        
+        let framerate = input.avg_frame_rate();
+        let framerate = framerate.numerator() as f64 / framerate.denominator() as f64;
+        std::fs::write("cache/framerate", framerate.to_string())?;
+        
         let context_decoder = ffmpeg::codec::context::Context::from_parameters(input.parameters())?;
         let mut decoder = context_decoder.decoder().video()?;
 
@@ -173,74 +235,136 @@ fn extract_video_frames(args: &Args) -> std::io::Result<()>{
 
     Ok(())
 }
+
+fn compress_frame(last_frame: &Frame, new_frame: &Frame, idx: usize) -> FrameData {
+    if idx % 100 == 0 { // full frame every 100 frames to mitigate overwrites
+        FrameData::Full(
+            new_frame.width as u16, 
+            new_frame.height as u16, 
+            new_frame.data.to_vec()
+        )
+    } else {
+        let data = Frame::delta(last_frame, new_frame);
+        
+        if data.len() == 0 {
+            FrameData::Empty
+        } else {
+            FrameData::Delta(data)
+        }
+    }
+}
+
+fn progress_tracker(counter: Arc<std::sync::atomic::AtomicUsize>, max: usize, descr: String) -> JoinHandle<()> {    
+    thread::spawn(move || {
+        let last_count = counter.load(std::sync::atomic::Ordering::Relaxed);
+        let start = std::time::Instant::now();
+        let mut av_rate = 0.01;
+        let mut warmup = 0;
+        loop {
+            let count = counter.load(std::sync::atomic::Ordering::Relaxed);
+            warmup += 1;
+            if count == max {
+                println!("Done.");
+                break;
+            }
+            if warmup < 5 {
+                println!("{} / {} frames written.", count, max);                
+            }
+            else {
+                let elapsed = start.elapsed().as_secs_f64();
+                
+                let rate = (count - last_count) as f64 / elapsed;
+                av_rate = av_rate * 0.95 + rate * 0.05;
+                
+                let eta = (max - count) as f64 / av_rate;
+    
+                let hrs = (eta / 3600.0) as i32;
+                let mins = ((eta - hrs as f64 * 3600.0) / 60.0) as i32;
+                let secs = (eta - hrs as f64 * 3600.0 - mins as f64 * 60.0) as i32;
+                if hrs > 0 {
+                    println!("{} / {} {} | ETA: {:}h{:02}m{:02}s", count, max, descr, hrs, mins, secs);
+                } else if mins > 0 {
+                    println!("{} / {} {} | ETA: {:}m{:02}s", count, max, descr, mins, secs);
+                } else {
+                    println!("{} / {} {} | ETA: {:}s", count, max, descr,  secs);
+                }
+            }
+    
+            
+            thread::sleep(std::time::Duration::from_millis(500));
+        }
+    })
+}
+
 fn compress_frames_to_file() {
     std::fs::create_dir_all(COMP_FRAMES_DIR).unwrap_or_else(|_| {}); 
 
-    let counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let pthread_counter = Arc::clone(&counter);
-    let frame_count = std::fs::read_dir(FRAMES_DIR).unwrap().count();
-    let progress_thread = thread::spawn(move || {
-        loop {
-            let count = pthread_counter.load(std::sync::atomic::Ordering::Relaxed);
-            println!("{} / {}", count, frame_count);
-            if count == frame_count {
-                break;
-            }
-            thread::sleep(std::time::Duration::from_millis(500));
-        }
-    });
-    let ranges = (0..frame_count).into_par_iter().chunks(100).collect::<Vec<_>>();
+    let mut frame_data_vec = Vec::new();
+    let mut last_frame: Option<Frame> = None;
+    let total_frames = std::fs::read_dir(FRAMES_DIR).unwrap().count();
 
-    rayon::scope(|s| {
-        for idxs in ranges {
+    let counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let progress = progress_tracker(Arc::clone(&counter), total_frames, "frames compressed".to_string());
+
+    for i in 0..total_frames {
+        let src_path = format!("{FRAMES_DIR}/frame{i}.ppm");
+        
+        let frame = Frame::from_file(&src_path)
+                        .expect(format!("failed to read frame {}", i).as_str());                    
+
+        let frame_data = match &last_frame {
+            Some(lf) => {
+                let data = compress_frame(&lf, &frame, i);
+                last_frame = Some(lf.apply_frame_data(&data));
+                data
+            },
+            None => {
+                let data = FrameData::Full(frame.width as u16, frame.height as u16, frame.data.to_vec());
+                last_frame = Some(Frame {
+                    width: frame.width,
+                    height: frame.height,
+                    data: frame.data.clone(),
+                });
+                data
+            }
+        };
+        counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        frame_data_vec.push(frame_data);
+    }
+    progress.join().unwrap();
+
+
+    let counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+    println!("Writing frames to disk");
+    let progress = progress_tracker(Arc::clone(&counter), total_frames, "frames written".to_string());
+
+    let thread_pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(THREAD_COUNT)
+        .build()
+        .unwrap();
+
+    thread_pool.scope(|s| {
+        for (i, frame_data) in frame_data_vec.into_iter().enumerate() {
             let counter = Arc::clone(&counter);
             s.spawn(move |_| {
-                let mut last_frame: Option<Frame> = None;
-                for i in idxs {        
-                    let old_path = format!("{FRAMES_DIR}/frame{i}.ppm");
-                    let new_path = format!("{COMP_FRAMES_DIR}/frame{i}.bin");
-                    let mut file = File::create(new_path).unwrap();
-                    let frame = Frame::from_file(&old_path).expect(
-                        format!("failed to read frame {}", i).as_str());            
-            
-                    let data = if i % 100 == 0 { // full frame every 100 frames to mitigate overwrites
-                        FrameData::Full(frame.width as u16, frame.height as u16, frame.data.to_vec())
-                    } else {
-                        FrameData::Delta(last_frame.as_ref()
-                        .map(|lf| Frame::delta(lf, &frame)).unwrap())
-                    };
-            
-                    let len = match &data {
-                        FrameData::Delta(d) => d.len(),
-                        FrameData::Full(..,d) => d.len(),
-                        FrameData::Empty => panic!("unreachable"),
-                    };                
-                    let data = if len == 0 {
-                        FrameData::Empty            
-                    }
-                    else {
-                        data
-                    };
-                    last_frame = Some(frame);
-                    bincode::serialize_into(&mut file, &data).unwrap();
-                    
-                    // increment counter
-                    let counter = Arc::clone(&counter);
-                    counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                }
+                let mut file = File::create(format!("{COMP_FRAMES_DIR}/frame{i}.bin")).unwrap();
+                bincode::serialize_into(&mut file, &frame_data).unwrap();
+                counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             });
         }
-    });    
-    progress_thread.join().unwrap();    
+    });   
+    
+    progress.join().unwrap();    
 }
-fn gen_cache_id() -> u64 {
+fn gen_cache_id(filename: &str) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    "cache_id".hash(&mut hasher);
+    filename.hash(&mut hasher);
     hasher.finish()
 }
 
 fn is_cache_valid(filename: &str) -> std::io::Result<bool> {
-    let hash = gen_cache_id();
+    let hash = gen_cache_id(filename);
 
     let cache_id = File::open("cache_id")?;
     let mut reader = BufReader::new(cache_id);
@@ -254,12 +378,11 @@ fn is_cache_valid(filename: &str) -> std::io::Result<bool> {
     Ok(hash == old_hash)
 }
 
-const THREAD_COUNT: usize = 8;
 fn main() {   
     let args = Args::parse();
     if !is_cache_valid(&args.input).unwrap_or(false) 
-    || !std::path::Path::new("comp-frames").exists() 
-    || !std::path::Path::new("frames").exists()
+    || !std::path::Path::new(COMP_FRAMES_DIR).exists() 
+    || !std::path::Path::new(FRAMES_DIR).exists()
     ||  args.nocache {
         std::fs::remove_dir_all(FRAMES_DIR).unwrap_or_else(|_| {});
         std::fs::remove_dir_all(COMP_FRAMES_DIR).unwrap_or_else(|_| {});
@@ -268,12 +391,18 @@ fn main() {
         extract_video_frames(&args).unwrap();
         println!("compressing frames");
         compress_frames_to_file();
-        std::fs::write("cache_id", gen_cache_id().to_string()).unwrap();        
+        std::fs::write("cache_id", gen_cache_id(&args.input).to_string()).unwrap();        
     }
     
     let frame_count = std::fs::read_dir(COMP_FRAMES_DIR).unwrap().count();
 
+    let frame_rate = std::fs::read_to_string("cache/framerate").unwrap().parse::<f64>().unwrap() * 0.5;
+    let delay = (1000.0 / frame_rate) as u64;
 
+    let thread_pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(THREAD_COUNT)
+        .build()
+        .unwrap();
 
     loop {
         
@@ -283,8 +412,8 @@ fn main() {
             let file = File::open(format!("{COMP_FRAMES_DIR}/frame{}.bin",i)).unwrap();
             let mut reader = BufReader::new(file);    
             // sleep thread
-            let sleep = thread::spawn(|| {
-                thread::sleep(std::time::Duration::from_millis(66));
+            let sleep = thread::spawn(move || {
+                thread::sleep(std::time::Duration::from_millis(*&delay));
             });
     
             // read frame
