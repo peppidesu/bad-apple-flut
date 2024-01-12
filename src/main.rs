@@ -9,18 +9,74 @@ use ffmpeg_next as ffmpeg;
 use ffmpeg::frame::Video;
 use ffmpeg::software::scaling::{Flags, Context};
 
-use rayon::prelude::*;
+use rayon::{prelude::*, vec};
 
 
 
 use serde::{Serialize, Deserialize};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 ///////////////////////////////////////////////////////////////////////////
 
 const HOST: &str = "pixelflut.uwu.industries:1234";
 const FRAMES_DIR: &str = "cache/frames";
-const COMP_FRAMES_DIR: &str = "cache/comp-frames";
-const THREAD_COUNT: usize = 12;
+const THREAD_COUNT: usize = 6;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq,ValueEnum)]
+enum CompressionLevel {
+    AirstrikeMode,
+    None,
+    Low,
+    Medium,
+    High,
+    TrashCompactor,
+}
+
+impl CompressionLevel {
+    fn luminance_treshold(&self) -> u16 {
+        match self {
+            Self::AirstrikeMode => 0,
+            Self::None => 0,
+            Self::Low => 4,
+            Self::Medium => 16,
+            Self::High => 24,
+            Self::TrashCompactor => 64,
+        }
+    }
+    fn chroma_threshold(&self, y: u8) -> u16 {
+        let y = y as f32 / 255.0;
+        let t = match self {
+            Self::AirstrikeMode => 0.0,
+            Self::None => 0.0,
+            Self::Low => (1.0 - y) * 12.0,
+            Self::Medium => (1.0 - y.powi(2) * 0.85) * 24.0,
+            Self::High => (1.0 - y.powi(2) * 0.75) * 48.0,
+            Self::TrashCompactor => (1.0 - y.powi(2)) * 96.0,
+        };
+        t as u16
+    }
+    fn full_blank_interval(&self) -> usize {
+        match self {
+            Self::AirstrikeMode => 1,
+            Self::None => 20,
+            Self::Low => 50,
+            Self::Medium => 100,
+            Self::High => 500,
+            Self::TrashCompactor => 2000,
+        }
+    }
+    fn quantize(&self, c: &Color) -> Color {
+        if !matches!(self, Self::TrashCompactor) {
+            return *c;
+        }
+        let (y,u,v) = rgb2yuv(c.0, c.1, c.2);
+        let y = y >> 2 << 2;
+        let u = u >> 4 << 4;
+        let v = v >> 4 << 4;
+        let (r,g,b) = yuv2rgb(y,u,v);
+        Color(r,g,b)
+    }
+    
+}
 
 #[derive(Parser)]
 struct Args {
@@ -39,6 +95,12 @@ struct Args {
     
     #[clap(long)]
     nocache: bool,
+
+    #[clap(long, default_value = "medium")]
+    compression: CompressionLevel,
+
+    #[clap(long)]
+    debug: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -65,10 +127,6 @@ enum FrameData {
     Empty
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-struct Config {
-
-}
 
 fn rgb2yuv(r: u8, g: u8, b: u8) -> (u8, u8, u8) {
     let l = 0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32;
@@ -79,7 +137,24 @@ fn rgb2yuv(r: u8, g: u8, b: u8) -> (u8, u8, u8) {
     return (l as u8, (u+128.0) as u8, (v+128.0) as u8 )
 }
 
+fn yuv2rgb(y: u8, u: u8, v: u8) -> (u8, u8, u8) {
+    let r = y as f32 + 1.13983 * (v as f32 - 128.0);
+    let g = y as f32 - 0.39465 * (u as f32 - 128.0) - 0.58060 * (v as f32 - 128.0);
+    let b = y as f32 + 2.03211 * (u as f32 - 128.0);
+    
+    return (r as u8, g as u8, b as u8)
+}
+
+
+
 impl Frame {
+    fn debug(width: usize, height: usize) -> Self {
+        Self {
+            width: width,
+            height: height,
+            data: vec![Color(128,128,128); width * height].into(),
+        }
+    }
     fn from_file(path: &str) -> std::io::Result<Self> {
         let file = File::open(path)?;
         let mut reader = BufReader::new(file);
@@ -90,7 +165,7 @@ impl Frame {
         let mut iter = line.split_whitespace();
         let width = iter.next().unwrap().parse::<usize>().unwrap();
         let height = iter.next().unwrap().parse::<usize>().unwrap();
-
+        
         reader.read_line(&mut String::new())?; // skip maxval
 
         let mut data = Vec::new();
@@ -109,10 +184,10 @@ impl Frame {
         })
     }
 
-    fn delta(old: &Self, new: &Self) -> Vec<Pixel> {
+    fn delta(old: &Self, new: &Self, args: &Args) -> Vec<Pixel> {
         assert_eq!(old.width, new.width);
         assert_eq!(old.height, new.height);        
-
+        
         old.data.into_par_iter()
             .zip(new.data.into_par_iter())
             .enumerate()
@@ -121,10 +196,12 @@ impl Frame {
                 // temporal chroma subsampling
                 let (y1,u1,v1) = rgb2yuv(old_val.0, old_val.1, old_val.2);
                 let (y2,u2,v2) = rgb2yuv(new_val.0, new_val.1, new_val.2);
-                let threshold = (1.4 - (y1 as f32 / 255.0).powi(2)) * 15.0;
-                if y1.abs_diff(y2) > 10 || u1.abs_diff(u2) as u16 + v1.abs_diff(v2) as u16 > threshold as u16 {
+                
+                if y1.abs_diff(y2) as u16 > args.compression.luminance_treshold()
+                || u1.abs_diff(u2) as u16 + v1.abs_diff(v2) as u16 > args.compression.chroma_threshold(y1) {
                     let x = i % old.width;
                     let y = i / old.width;
+                    
                     Some(Pixel { x, y, color: *new_val })
                 } else {
                     None
@@ -169,8 +246,8 @@ impl Frame {
 }
 
 impl Pixel {    
-    fn to_pixelflut_string(&self, offset_x: usize, y: usize) -> String {
-        format!("PX {} {} {:02x}{:02x}{:02x}\n", self.x+offset_x, self.y+y, self.color.0, self.color.1, self.color.2)
+    fn to_pixelflut_string(&self, offset_x: usize, offset_y: usize) -> String {
+        format!("PX {} {} {:02x}{:02x}{:02x}\n", self.x+offset_x, self.y+offset_y, self.color.0, self.color.1, self.color.2)
     }
 }
 
@@ -193,7 +270,7 @@ fn extract_video_frames(args: &Args) -> std::io::Result<()> {
         
         let context_decoder = ffmpeg::codec::context::Context::from_parameters(input.parameters())?;
         let mut decoder = context_decoder.decoder().video()?;
-
+        
         let mut scaler = Context::get(
             decoder.format(),
             decoder.width(),
@@ -212,10 +289,7 @@ fn extract_video_frames(args: &Args) -> std::io::Result<()> {
                 while decoder.receive_frame(&mut decoded).is_ok() {                    
                     let mut frame = Video::empty();
                     scaler.run(&decoded, &mut frame)?;                                        
-                    if frame_index % 2 == 0 {
-                        frame_index += 1;
-                        continue;
-                    }
+                    
                     let mut file = File::create(format!("{FRAMES_DIR}/frame{file_index}.ppm"))?;                    
                     file.write_all(format!("P6\n{} {}\n255\n", frame.width(), frame.height()).as_bytes())?;
                     file.write_all(frame.data(0))?;
@@ -238,23 +312,31 @@ fn extract_video_frames(args: &Args) -> std::io::Result<()> {
     Ok(())
 }
 
-fn compress_frame(last_frame: &Frame, new_frame: &Frame, idx: usize) -> FrameData {
-    if idx % 100 == 0 { // full frame every 100 frames to mitigate overwrites
+fn compress_frame(last_frame: &Frame, new_frame: &Frame, idx: usize, args: &Args) -> FrameData {
+    if matches!(args.compression, CompressionLevel::AirstrikeMode) {
+        return FrameData::Full(
+            new_frame.width as u16, 
+            new_frame.height as u16, 
+            new_frame.data.to_vec()
+        );
+    }
+    if idx % args.compression.full_blank_interval() == 0 { // full frame every 100 frames to mitigate overwrites
         FrameData::Full(
             new_frame.width as u16, 
             new_frame.height as u16, 
             new_frame.data.to_vec()
         )
     } else {
-        let data = Frame::delta(last_frame, new_frame);
+        let data = Frame::delta(last_frame, new_frame, args);
         
-        if data.len() == 0 {
+        if data.len() == 0  {
             FrameData::Empty
         } else {
             FrameData::Delta(data)
         }
     }
 }
+
 
 fn progress_tracker(counter: Arc<std::sync::atomic::AtomicUsize>, max: usize, descr: String) -> JoinHandle<()> {    
     thread::spawn(move || {
@@ -309,7 +391,7 @@ fn progress_tracker(counter: Arc<std::sync::atomic::AtomicUsize>, max: usize, de
     })
 }
 
-fn compress_frames_to_file() {
+fn compress_frames_to_vec(args: &Args) -> Vec<FrameData> {
     println!("Compressing frames ...");
     
     let mut frame_data_vec = Vec::new();
@@ -324,12 +406,23 @@ fn compress_frames_to_file() {
         
         let frame = Frame::from_file(&src_path)
                         .expect(format!("failed to read frame {}", i).as_str());                    
-
+        
         let frame_data = match &last_frame {
             Some(lf) => {
-                let data = compress_frame(&lf, &frame, i);
+                let data = compress_frame(&lf, &frame, i, &args);
                 last_frame = Some(lf.apply_frame_data(&data));
-                data
+                if args.debug {
+                    let debug_frame = Frame::debug(frame.width, frame.height);
+                    let debug_frame = debug_frame.apply_frame_data(&data);
+                    FrameData::Full(
+                        debug_frame.width as u16, 
+                        debug_frame.height as u16, 
+                        debug_frame.data.to_vec()
+                    )
+                }
+                else {
+                    data
+                }
             },
             None => {
                 let data = FrameData::Full(frame.width as u16, frame.height as u16, frame.data.to_vec());
@@ -345,42 +438,18 @@ fn compress_frames_to_file() {
         frame_data_vec.push(frame_data);
     }
     progress.join().unwrap();
-
-
-    let counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-
-    println!("Writing frames to disk ...");
-
-    std::fs::create_dir_all(COMP_FRAMES_DIR).unwrap_or_else(|_| {}); 
-    
-    let progress = progress_tracker(Arc::clone(&counter), total_frames, "frames written".to_string());
-
-    let thread_pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(THREAD_COUNT)
-        .build()
-        .unwrap();
-
-    thread_pool.scope(|s| {
-        for (i, frame_data) in frame_data_vec.into_iter().enumerate() {
-            let counter = Arc::clone(&counter);
-            s.spawn(move |_| {
-                let mut file = File::create(format!("{COMP_FRAMES_DIR}/frame{i}.bin")).unwrap();
-                bincode::serialize_into(&mut file, &frame_data).unwrap();
-                counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            });
-        }
-    });   
-    
-    progress.join().unwrap();    
+    frame_data_vec
 }
-fn gen_cache_id(filename: &str) -> u64 {
+fn gen_cache_id(args: &Args) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    filename.hash(&mut hasher);
+    args.input.hash(&mut hasher);
+    args.width.hash(&mut hasher);
+    args.height.hash(&mut hasher);
     hasher.finish()
 }
 
-fn is_cache_valid(filename: &str) -> std::io::Result<bool> {
-    let hash = gen_cache_id(filename);
+fn is_cache_valid(args: &Args) -> std::io::Result<bool> {
+    let hash = gen_cache_id(args);
 
     let cache_id = File::open("cache_id")?;
     let mut reader = BufReader::new(cache_id);
@@ -396,21 +465,16 @@ fn is_cache_valid(filename: &str) -> std::io::Result<bool> {
 
 fn main() {   
     let args = Args::parse();
-    if !is_cache_valid(&args.input).unwrap_or(false) 
-    || !std::path::Path::new(COMP_FRAMES_DIR).exists() 
+    if !is_cache_valid(&args).unwrap_or(false) 
     || !std::path::Path::new(FRAMES_DIR).exists()
     ||  args.nocache {
-        std::fs::remove_dir_all(FRAMES_DIR).unwrap_or_else(|_| {});
-        std::fs::remove_dir_all(COMP_FRAMES_DIR).unwrap_or_else(|_| {});
+        std::fs::remove_dir_all(FRAMES_DIR).unwrap_or_else(|_| {});                
         std::fs::remove_file("cache_id").unwrap_or_else(|_| {});        
-        extract_video_frames(&args).unwrap();        
-        compress_frames_to_file();
-        std::fs::write("cache_id", gen_cache_id(&args.input).to_string()).unwrap();        
-    }
-    
-    let frame_count = std::fs::read_dir(COMP_FRAMES_DIR).unwrap().count();
+        extract_video_frames(&args).unwrap();                
+        std::fs::write("cache_id", gen_cache_id(&args).to_string()).unwrap();        
+    }    
 
-    let frame_rate = std::fs::read_to_string("cache/framerate").unwrap().parse::<f64>().unwrap() * 0.5;
+    let frame_rate = std::fs::read_to_string("cache/framerate").unwrap().parse::<f64>().unwrap();
     let delay = (1000.0 / frame_rate) as u64;
 
     let thread_pool = rayon::ThreadPoolBuilder::new()
@@ -418,22 +482,20 @@ fn main() {
         .build()
         .unwrap();
 
+    let frame_data_vec = compress_frames_to_vec(&args);
+
     println!("Playing video on {HOST}");
     loop {
         
         let stream = Arc::new(TcpStream::connect(HOST).unwrap());
         
-        for i in 0..frame_count {
-            let file = File::open(format!("{COMP_FRAMES_DIR}/frame{}.bin",i)).unwrap();
-            let mut reader = BufReader::new(file);    
+        for frame_data in frame_data_vec.iter() {
+            let frame_data = frame_data.to_owned();
             // sleep thread
             let sleep = thread::spawn(move || {
                 thread::sleep(std::time::Duration::from_millis(*&delay));
             });
     
-            // read frame
-            let frame_data: FrameData = bincode::deserialize_from(&mut reader).unwrap();
-            
             // get pixels
             let pixels = match frame_data {
                 FrameData::Delta(d) => d,
