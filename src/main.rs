@@ -5,11 +5,7 @@ use std::net::TcpStream;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
-use ffmpeg_next as ffmpeg;
-use ffmpeg::frame::Video;
-use ffmpeg::software::scaling::{Flags, Context};
-
-use rayon::{prelude::*, vec};
+use rayon::prelude::*;
 
 
 
@@ -135,6 +131,7 @@ fn rgb2yuv(r: u8, g: u8, b: u8) -> (u8, u8, u8) {
     
     
     return (l as u8, (u+128.0) as u8, (v+128.0) as u8 )
+    // the quick brwon
 }
 
 fn yuv2rgb(y: u8, u: u8, v: u8) -> (u8, u8, u8) {
@@ -155,7 +152,7 @@ impl Frame {
             data: vec![Color(128,128,128); width * height].into(),
         }
     }
-    fn from_file(path: &str) -> std::io::Result<Self> {
+    fn from_file(path: &str, level: &CompressionLevel) -> std::io::Result<Self> {
         let file = File::open(path)?;
         let mut reader = BufReader::new(file);
         let mut line = String::new();
@@ -174,8 +171,8 @@ impl Frame {
             let r = c[0];
             let g = c[1];
             let b = c[2];
-
-            Color(r,g,b)
+            
+            level.quantize(&Color(r,g,b))
         }).collect::<Vec<_>>();
         Ok(Self {
             width,
@@ -251,65 +248,42 @@ impl Pixel {
     }
 }
 
-fn extract_video_frames(args: &Args) -> std::io::Result<()> {
+fn get_framerate_cli(args: &Args) -> f64 {
+    // ffprobe -v 0 -of csv=p=0 -select_streams v:0 -show_entries stream=r_frame_rate infile
+    let output = std::process::Command::new("ffprobe")
+        .arg("-v")
+        .arg("0")
+        .arg("-of")
+        .arg("csv=p=0")
+        .arg("-select_streams")
+        .arg("v:0")
+        .arg("-show_entries")
+        .arg("stream=r_frame_rate")
+        .arg(&args.input)
+        .output()
+        .expect("failed to execute ffprobe");
+    
+    let output = String::from_utf8(output.stdout).unwrap();
+    let output = output.lines().next().unwrap();
+
+    let mut iter = output.split('/');    
+    let numerator = iter.next().unwrap().parse::<i32>().unwrap();
+    let denominator = iter.next().unwrap().parse::<i32>().unwrap();
+    numerator as f64 / denominator as f64
+
+}
+
+fn extract_video_frames_cli(args: &Args) {
     println!("Extracting frames ...");
     std::fs::create_dir_all(FRAMES_DIR).unwrap_or_else(|_| {});
+    // ffmpeg -i infile out%d.ppm
+    let mut options = std::process::Command::new("ffmpeg");
+    options.arg("-i");
+    options.arg(&args.input);
+    options.arg(format!("{FRAMES_DIR}/frame%d.ppm"));
+    options.output().expect("failed to execute ffmpeg");
 
-    ffmpeg::init()?;
-
-    if let Ok(mut ictx) = ffmpeg::format::input(&args.input) {
-        let input = ictx
-            .streams()
-            .best(ffmpeg::media::Type::Video)
-            .ok_or(ffmpeg::Error::StreamNotFound)?;
-        let video_stream_index = input.index();
-        
-        let framerate = input.avg_frame_rate();
-        let framerate = framerate.numerator() as f64 / framerate.denominator() as f64;
-        std::fs::write("cache/framerate", framerate.to_string())?;
-        
-        let context_decoder = ffmpeg::codec::context::Context::from_parameters(input.parameters())?;
-        let mut decoder = context_decoder.decoder().video()?;
-        
-        let mut scaler = Context::get(
-            decoder.format(),
-            decoder.width(),
-            decoder.height(),
-            ffmpeg::format::Pixel::RGB24,
-            args.width.unwrap_or(decoder.width()),
-            args.height.unwrap_or(decoder.height()),
-            Flags::BILINEAR,
-        )?;
-
-        let mut frame_index = 0;
-        let mut file_index = 0;
-        let mut receive_and_process_decoded_frames =
-            |decoder: &mut ffmpeg::decoder::Video| -> std::io::Result<()> {
-                let mut decoded = Video::empty();
-                while decoder.receive_frame(&mut decoded).is_ok() {                    
-                    let mut frame = Video::empty();
-                    scaler.run(&decoded, &mut frame)?;                                        
-                    
-                    let mut file = File::create(format!("{FRAMES_DIR}/frame{file_index}.ppm"))?;                    
-                    file.write_all(format!("P6\n{} {}\n255\n", frame.width(), frame.height()).as_bytes())?;
-                    file.write_all(frame.data(0))?;
-                    frame_index += 1;
-                    file_index += 1;
-                }
-                Ok(())
-            };
-
-        for (stream, packet) in ictx.packets() {
-            if stream.index() == video_stream_index {
-                decoder.send_packet(&packet)?;
-                receive_and_process_decoded_frames(&mut decoder)?;
-            }
-        }
-        decoder.send_eof()?;
-        receive_and_process_decoded_frames(&mut decoder)?;
-    }
-
-    Ok(())
+    options.status().expect("failed to execute ffmpeg");
 }
 
 fn compress_frame(last_frame: &Frame, new_frame: &Frame, idx: usize, args: &Args) -> FrameData {
@@ -402,9 +376,10 @@ fn compress_frames_to_vec(args: &Args) -> Vec<FrameData> {
     let progress = progress_tracker(Arc::clone(&counter), total_frames, "frames compressed".to_string());
 
     for i in 0..total_frames {
-        let src_path = format!("{FRAMES_DIR}/frame{i}.ppm");
+        let frame_id = i+1;
+        let src_path = format!("{FRAMES_DIR}/frame{frame_id}.ppm");
         
-        let frame = Frame::from_file(&src_path)
+        let frame = Frame::from_file(&src_path, &args.compression)
                         .expect(format!("failed to read frame {}", i).as_str());                    
         
         let frame_data = match &last_frame {
@@ -465,12 +440,13 @@ fn is_cache_valid(args: &Args) -> std::io::Result<bool> {
 
 fn main() {   
     let args = Args::parse();
+    println!("{}", get_framerate_cli(&args));
     if !is_cache_valid(&args).unwrap_or(false) 
     || !std::path::Path::new(FRAMES_DIR).exists()
     ||  args.nocache {
         std::fs::remove_dir_all(FRAMES_DIR).unwrap_or_else(|_| {});                
         std::fs::remove_file("cache_id").unwrap_or_else(|_| {});        
-        extract_video_frames(&args).unwrap();                
+        extract_video_frames_cli(&args);                
         std::fs::write("cache_id", gen_cache_id(&args).to_string()).unwrap();        
     }    
 

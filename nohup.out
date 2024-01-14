@@ -507,3 +507,35 @@ compressing frames
 1074 / 1080
 1078 / 1080
 1080 / 1080
+Extracting frames ...
+Compressing frames ...
+warning: unused import: `vec`
+  --> src/main.rs:12:25
+   |
+12 | use rayon::{prelude::*, vec};
+   |                         ^^^
+   |
+   = note: `#[warn(unused_imports)]` on by default
+
+warning: method `quantize` is never used
+  --> src/main.rs:67:8
+   |
+34 | impl CompressionLevel {
+   | --------------------- method in this implementation
+...
+67 |     fn quantize(&self, c: &Color) -> Color {
+   |        ^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` on by default
+
+warning: function `yuv2rgb` is never used
+   --> src/main.rs:141:4
+    |
+141 | fn yuv2rgb(y: u8, u: u8, v: u8) -> (u8, u8, u8) {
+    |    ^^^^^^^
+
+warning: `bad-apple-flut` (bin "bad-apple-flut") generated 3 warnings (run `cargo fix --bin "bad-apple-flut"` to apply 1 suggestion)
+    Finished dev [unoptimized + debuginfo] target(s) in 0.04s
+     Running `target/debug/bad-apple-flut -i lucky-star.mp4 -x 570 -y 0 --compression medium`
+Compressing frames ...
+Compressing frames ...
