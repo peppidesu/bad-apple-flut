@@ -280,6 +280,8 @@ fn extract_video_frames_cli(args: &Args) {
     let mut options = std::process::Command::new("ffmpeg");
     options.arg("-i");
     options.arg(&args.input);
+    options.arg("-vf");
+    options.arg("fps=15");
     options.arg(format!("{FRAMES_DIR}/frame%d.ppm"));
     options.output().expect("failed to execute ffmpeg");
 
@@ -440,7 +442,6 @@ fn is_cache_valid(args: &Args) -> std::io::Result<bool> {
 
 fn main() {   
     let args = Args::parse();
-    println!("{}", get_framerate_cli(&args));
     if !is_cache_valid(&args).unwrap_or(false) 
     || !std::path::Path::new(FRAMES_DIR).exists()
     ||  args.nocache {
@@ -450,7 +451,7 @@ fn main() {
         std::fs::write("cache_id", gen_cache_id(&args).to_string()).unwrap();        
     }    
 
-    let frame_rate = std::fs::read_to_string("cache/framerate").unwrap().parse::<f64>().unwrap();
+    let frame_rate = 15.0;
     let delay = (1000.0 / frame_rate) as u64;
 
     let thread_pool = rayon::ThreadPoolBuilder::new()
