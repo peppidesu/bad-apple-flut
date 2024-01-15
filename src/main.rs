@@ -37,7 +37,78 @@ impl From<std::io::Error> for Error {
 ///////////////////////////////////////////////////////////////////////////
  
 pub trait VideoCompressor {
-    fn compress(&self, frames: Vec<FrameFile>) -> FrameData;
+    fn compress_frame(&mut self, new_frame: &Frame, args: &Args) -> FrameData;
+}
+
+pub struct DeltaCompressorV1 {
+    last_frame: Option<Frame>,
+    args: Args
+}
+
+impl DeltaCompressorV1 {
+    pub fn new(args: &Args) -> Self {
+        Self { last_frame: None, args: args.clone() }
+    }
+
+    pub fn delta(&self, old: &Frame, new: &Frame) -> FrameData {                
+        let px_vec: Vec<_> = old.data.into_par_iter()
+            .zip(new.data.into_par_iter())
+            .enumerate()
+            .filter_map(|(i, (old_val, new_val))| {    
+                // temporal chroma subsampling
+                let (old_y, old_u, old_v) = old_val.to_yuv();
+                let (new_y, new_u, new_v) = new_val.to_yuv();
+                
+                let y_diff = old_y.abs_diff(new_y) as u16;
+                let c_diff = old_u.abs_diff(new_u) as u16 + old_v.abs_diff(new_v) as u16;
+
+                if y_diff > self.args.compression.luminance_treshold()
+                || c_diff > self.args.compression.chroma_threshold(old_y) {
+                    let x = i % old.width;
+                    let y = i / old.width;
+                    
+                    Some(Pixel { x, y, color: *new_val })
+                } else {
+                    None
+                }
+            })
+            .collect();
+    
+        if px_vec.len() == 0 {
+            FrameData::Empty
+        } else {
+            FrameData::Delta(px_vec)
+        }
+    }
+
+    pub fn compress_frame(&mut self, new_frame: &Frame) -> FrameData {        
+        let frame_data = match &self.last_frame {
+            Some(lf) => {
+                let data = self.delta(&lf, &new_frame);                
+
+                self.last_frame = Some(lf.apply_frame_data(&data));
+
+                if self.args.debug {
+                    let debug_frame = Frame::debug(new_frame.width, new_frame.height);
+                    let debug_frame = debug_frame.apply_frame_data(&data);
+                    debug_frame.to_full_frame_data()
+                }
+                else {
+                    data
+                }
+            },
+            None => {
+                let data = new_frame.to_full_frame_data();
+                self.last_frame = Some(Frame {
+                    width: new_frame.width,
+                    height: new_frame.height,
+                    data: new_frame.data.clone(),
+                });
+                data
+            }
+        };
+        frame_data
+    }
 }
 
 ///////////////////////////////////////////////////////////////////////////
@@ -89,7 +160,7 @@ impl CompressionLevel {
 
 ///////////////////////////////////////////////////////////////////////////
 
-#[derive(Parser)]
+#[derive(Parser, Clone)]
 pub struct Args {
     #[clap(short, long)]
     input: String,
@@ -220,37 +291,7 @@ impl Frame {
     }
 }
 
-fn delta(old: &Frame, new: &Frame, args: &Args) -> FrameData {
-    assert_eq!(old.width, new.width);
-    assert_eq!(old.height, new.height);        
-    
-    let px_vec: Vec<_> = old.data.into_par_iter()
-        .zip(new.data.into_par_iter())
-        .enumerate()
-        .filter_map(|(i, (old_val, new_val))| {
 
-            // temporal chroma subsampling
-            let (old_y, old_u, old_v) = old_val.to_yuv();
-            let (new_y, new_u, new_v) = new_val.to_yuv();
-            
-            if old_y.abs_diff(new_y) as u16 > args.compression.luminance_treshold()
-            || old_u.abs_diff(new_u) as u16 + old_v.abs_diff(new_v) as u16 > args.compression.chroma_threshold(old_y) {
-                let x = i % old.width;
-                let y = i / old.width;
-                
-                Some(Pixel { x, y, color: *new_val })
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    if px_vec.len() == 0 {
-        FrameData::Empty
-    } else {
-        FrameData::Delta(px_vec)
-    }
-}
 
 ///////////////////////////////////////////////////////////////////////////
 
@@ -352,23 +393,13 @@ fn extract_video_frames_cli(args: &Args) -> Result<()> {
     Ok(())
 }
 
-fn compress_frame(last_frame: &Frame, new_frame: &Frame, idx: usize, args: &Args) -> FrameData {
-    if matches!(args.compression, CompressionLevel::AirstrikeMode) 
-    || idx % args.compression.full_blank_interval() == 0 { 
-        new_frame.to_full_frame_data()
-    } else {
-        delta(last_frame, new_frame, args)
-    }
-}
-
 
 fn progress_tracker(counter: Arc<std::sync::atomic::AtomicUsize>, max: usize, descr: String) -> JoinHandle<()> {    
     thread::spawn(move || {
         let last_count = counter.load(std::sync::atomic::Ordering::Relaxed);
         let start = std::time::Instant::now();
         let mut av_rate = 0.1;
-        let mut warmup = 0;
-        
+        let mut warmup = 0;        
         
         let cursorpos = crossterm::cursor::position().unwrap();
 
@@ -417,8 +448,7 @@ fn progress_tracker(counter: Arc<std::sync::atomic::AtomicUsize>, max: usize, de
 
 fn compress_frames_to_vec(args: &Args) -> Vec<FrameData> {
     println!("Compressing frames ...");
-    
-    
+        
     let total_frames = std::fs::read_dir(FRAMES_DIR).unwrap().count();
     let frame_data_vec = Arc::new(Mutex::new(vec![FrameData::Empty; total_frames]));
 
@@ -443,35 +473,14 @@ fn compress_frames_to_vec(args: &Args) -> Vec<FrameData> {
             let frame_data_vec = Arc::clone(&frame_data_vec);
             s.spawn(move |_| {
                 let mut thread_frame_data_vec = Vec::new();
-                let mut last_frame: Option<Frame> = None;
+                let mut compressor = DeltaCompressorV1::new(args);
+
                 for frame_file in chunk {
-                    let frame = frame_file.load().unwrap();
-                    let frame_data = match &last_frame {
-                        Some(lf) => {
-                            let data = compress_frame(&lf, &frame, frame_file.idx, &args);
-                            last_frame = Some(lf.apply_frame_data(&data));
-                            if args.debug {
-                                let debug_frame = Frame::debug(frame.width, frame.height);
-                                let debug_frame = debug_frame.apply_frame_data(&data);
-                                debug_frame.to_full_frame_data()
-                            }
-                            else {
-                                data
-                            }
-                        },
-                        None => {
-                            let data = frame.to_full_frame_data();
-                            last_frame = Some(Frame {
-                                width: frame.width,
-                                height: frame.height,
-                                data: frame.data.clone(),
-                            });
-                            data
-                        }
-                    };
+                    let frame_data = compressor.compress_frame(&frame_file.load().unwrap());
                     thread_frame_data_vec.push(frame_data);
                     counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
+                
                 frame_data_vec.lock().unwrap().splice(
                     chunk[0].idx-1..chunk[0].idx-1+thread_frame_data_vec.len(), 
                     thread_frame_data_vec
@@ -524,6 +533,7 @@ fn main() {
 
     let frame_rate = 15.0;
     let delay = (1000.0 / frame_rate) as u64;
+    let mut lag = 0;
 
     let thread_pool = rayon::ThreadPoolBuilder::new()
         .num_threads(THREAD_COUNT)
@@ -538,10 +548,14 @@ fn main() {
         let stream = Arc::new(TcpStream::connect(HOST).unwrap());
         
         for frame_data in frame_data_vec.iter() {
+            let start_time = std::time::Instant::now();
+
             let frame_data = frame_data.to_owned();
             // sleep thread
-            let sleep = thread::spawn(move || {
-                thread::sleep(std::time::Duration::from_millis(*&delay));
+            let dur = delay.saturating_sub(lag);
+            lag = lag.saturating_sub(delay);
+            let sleep = thread::spawn(move || {                
+                thread::sleep(std::time::Duration::from_millis(dur));
             });
     
             // get pixels
@@ -559,15 +573,14 @@ fn main() {
             };
     
             let len = pixels.len();
-            if len != 0 {
-                
+            if len != 0 {                
                 // send pixels
                 let msgs = pixels.into_par_iter()
                     .map(|p| p.to_pixelflut_string(
                         args.x_offset.unwrap_or(0), 
                         args.y_offset.unwrap_or(0))
                     )
-                    .chunks(len.div_ceil(THREAD_COUNT))
+                    .chunks(len.div_ceil(THREAD_COUNT)) // rchunks doesn't exist for par_iter, also we need the length anyway
                     .map(|c| c.join(""))
                     .collect::<Vec<_>>();
     
@@ -582,8 +595,11 @@ fn main() {
                     }
                 });
             }
-    
+
             sleep.join().unwrap();
+            let end_time = std::time::Instant::now();
+            let elapsed = end_time.duration_since(start_time).as_millis() as u64;
+            lag += elapsed.saturating_sub(delay);            
         }
     }    
 }
