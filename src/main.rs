@@ -1,34 +1,59 @@
+use std::borrow::Borrow;
 use std::fs::File;
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader, BufWriter, Write, Read};
 use std::net::TcpStream;
-use std::sync::Arc;
+use std::ops::Deref;
+use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
 use rayon::prelude::*;
 
-
-
-use serde::{Serialize, Deserialize};
 use clap::{Parser, ValueEnum};
+
 ///////////////////////////////////////////////////////////////////////////
 
-const HOST: &str = "pixelflut.uwu.industries:1234";
-const FRAMES_DIR: &str = "cache/frames";
-const THREAD_COUNT: usize = 12;
+pub const HOST: &str = "pixelflut.uwu.industries:1234";
+pub const FRAMES_DIR: &str = "cache/frames";
+pub const CACHE_ID_PATH: &str = "cache/cache_id";
+pub const THREAD_COUNT: usize = 12;
+
+///////////////////////////////////////////////////////////////////////////
+
+#[derive(Debug)]
+pub enum Error {
+    Io(std::io::Error),
+    FileParseError(String),
+    FFmpegError(String),
+}
+
+pub type Result<T> = core::result::Result<T, Error>;
+
+impl From<std::io::Error> for Error {
+    fn from(e: std::io::Error) -> Self { Self::Io(e) }
+}
+
+///////////////////////////////////////////////////////////////////////////
+ 
+pub trait VideoCompressor {
+    fn compress(&self, frames: Vec<FrameFile>) -> FrameData;
+}
+
+///////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq,ValueEnum)]
-enum CompressionLevel {
+pub enum CompressionLevel {
     AirstrikeMode,
     None,
     Low,
     Medium,
     High,
-    TrashCompactor,
+    TrashCompactor
 }
 
 impl CompressionLevel {
-    fn luminance_treshold(&self) -> u16 {
+    pub fn luminance_treshold(&self) -> u16 {
         match self {
             Self::AirstrikeMode => 0,
             Self::None => 0,
@@ -38,7 +63,7 @@ impl CompressionLevel {
             Self::TrashCompactor => 64,
         }
     }
-    fn chroma_threshold(&self, y: u8) -> u16 {
+    pub fn chroma_threshold(&self, y: u8) -> u16 {
         let y = y as f32 / 255.0;
         let t = match self {
             Self::AirstrikeMode => 0.0,
@@ -50,7 +75,7 @@ impl CompressionLevel {
         };
         t as u16
     }
-    fn full_blank_interval(&self) -> usize {
+    pub fn full_blank_interval(&self) -> usize {
         match self {
             Self::AirstrikeMode => 1,
             Self::None => 20,
@@ -60,27 +85,18 @@ impl CompressionLevel {
             Self::TrashCompactor => 2000,
         }
     }
-    fn quantize(&self, c: &Color) -> Color {
-        if !matches!(self, Self::TrashCompactor) {
-            return *c;
-        }
-        let (y,u,v) = rgb2yuv(c.0, c.1, c.2);
-        let y = y >> 2 << 2;
-        let u = u >> 4 << 4;
-        let v = v >> 4 << 4;
-        let (r,g,b) = yuv2rgb(y,u,v);
-        Color(r,g,b)
-    }
-    
 }
 
+///////////////////////////////////////////////////////////////////////////
+
 #[derive(Parser)]
-struct Args {
+pub struct Args {
     #[clap(short, long)]
     input: String,
 
     #[clap(short)]
     x_offset: Option<usize>,
+
     #[clap(short)]
     y_offset: Option<usize>,
     
@@ -99,113 +115,75 @@ struct Args {
     debug: bool,
 }
 
+///////////////////////////////////////////////////////////////////////////
+
 #[derive(Debug, Clone)]
-struct Frame {
-    width: usize,
-    height: usize,
+pub struct Frame {
+    pub width: usize,
+    pub height: usize,
     data: Box<[Color]>,
 }
 
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone, Copy)]
-struct Color(u8, u8, u8);
-
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone, Copy)]
-struct Pixel {
-    x: usize,
-    y: usize,
-    color: Color
+#[derive(Debug, Clone)]
+pub struct FrameFile {
+    pub idx: usize,
+    path: String
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-enum FrameData {
-    Delta(Vec<Pixel>),
-    Full(u16,u16,Vec<Color>),
-    Empty
-}
-
-
-fn rgb2yuv(r: u8, g: u8, b: u8) -> (u8, u8, u8) {
-    let l = 0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32;
-    let u = -0.14713 * r as f32 - 0.28886 * g as f32 + 0.436 * b as f32;
-    let v = 0.615 * r as f32 - 0.51499 * g as f32 - 0.10001 * b as f32;
-    
-    
-    return (l as u8, (u+128.0) as u8, (v+128.0) as u8 )
-    // the quick brwon
-}
-
-fn yuv2rgb(y: u8, u: u8, v: u8) -> (u8, u8, u8) {
-    let r = y as f32 + 1.13983 * (v as f32 - 128.0);
-    let g = y as f32 - 0.39465 * (u as f32 - 128.0) - 0.58060 * (v as f32 - 128.0);
-    let b = y as f32 + 2.03211 * (u as f32 - 128.0);
-    
-    return (r as u8, g as u8, b as u8)
-}
-
-
-
-impl Frame {
-    fn debug(width: usize, height: usize) -> Self {
-        Self {
-            width: width,
-            height: height,
-            data: vec![Color(128,128,128); width * height].into(),
-        }
+impl FrameFile {
+    pub fn new(idx: usize) -> Self {
+        let path = format!("{FRAMES_DIR}/frame{idx}.ppm");
+        
+        Self { idx, path }
     }
-    fn from_file(path: &str, level: &CompressionLevel) -> std::io::Result<Self> {
-        let file = File::open(path)?;
+    pub fn load(&self) -> Result<Frame> {
+        let file = File::open(&self.path)?;
         let mut reader = BufReader::new(file);
+        
         let mut line = String::new();
-
         reader.read_line(&mut String::new())?; // skip P6
         reader.read_line(&mut line)?; // width + height        
+        
         let mut iter = line.split_whitespace();
-        let width = iter.next().unwrap().parse::<usize>().unwrap();
-        let height = iter.next().unwrap().parse::<usize>().unwrap();
+        
+        let width = iter.next()
+            .expect("Unreachable")
+            .parse::<usize>()
+            .map_err(|e| Error::FileParseError(e.to_string()))?;
+
+        let height = iter.next()
+            .ok_or(Error::FileParseError(
+                "Unexpected end of line".to_string()
+            ))?
+            .parse::<usize>()
+            .map_err(|e| Error::FileParseError(e.to_string()))?;
         
         reader.read_line(&mut String::new())?; // skip maxval
 
-        let mut data = Vec::new();
+        let mut data = Vec::new();        
         reader.read_to_end(&mut data)?;
-        let data = data.chunks(3).map(|c| {
-            let r = c[0];
-            let g = c[1];
-            let b = c[2];
-            
-            level.quantize(&Color(r,g,b))
-        }).collect::<Vec<_>>();
-        Ok(Self {
-            width,
-            height,
-            data: data.into(),
-        })
+
+        let data = data.chunks(3)
+            .map(|c| Color::new(c[0], c[1], c[2]))
+            .collect::<Vec<_>>();
+
+        Ok(Frame { width, height, data: data.into(), })        
+    }
+}
+
+impl Frame {
+    fn debug(width: usize, height: usize) -> Self {
+        let data = vec![Color::new(128, 128, 128); width * height].into(); 
+        Self { width, height, data }    
     }
 
-    fn delta(old: &Self, new: &Self, args: &Args) -> Vec<Pixel> {
-        assert_eq!(old.width, new.width);
-        assert_eq!(old.height, new.height);        
-        
-        old.data.into_par_iter()
-            .zip(new.data.into_par_iter())
-            .enumerate()
-            .filter_map(|(i, (old_val, new_val))| {
-
-                // temporal chroma subsampling
-                let (y1,u1,v1) = rgb2yuv(old_val.0, old_val.1, old_val.2);
-                let (y2,u2,v2) = rgb2yuv(new_val.0, new_val.1, new_val.2);
-                
-                if y1.abs_diff(y2) as u16 > args.compression.luminance_treshold()
-                || u1.abs_diff(u2) as u16 + v1.abs_diff(v2) as u16 > args.compression.chroma_threshold(y1) {
-                    let x = i % old.width;
-                    let y = i / old.width;
-                    
-                    Some(Pixel { x, y, color: *new_val })
-                } else {
-                    None
-                }
-            })
-            .collect()
-    } 
+    fn to_full_frame_data(&self) -> FrameData {
+        FrameData::Full {
+            width: self.width as u16, 
+            height: self.height as u16, 
+            data: self.data.to_vec() 
+        }
+    }
     fn apply_pixels(&self, pixels: &Vec<Pixel>) -> Self {
         let mut data = self.data.clone();
         for p in pixels {
@@ -221,7 +199,7 @@ impl Frame {
     fn apply_frame_data(&self, data: &FrameData) -> Self {
         match data {
             FrameData::Delta(d) => self.apply_pixels(d),
-            FrameData::Full(w,h,d) => Self {
+            FrameData::Full { width: w, height: h, data: d } => Self {
                 width: *w as usize,
                 height: *h as usize,
                 data: d.clone().into(),
@@ -242,38 +220,122 @@ impl Frame {
     }
 }
 
-impl Pixel {    
-    fn to_pixelflut_string(&self, offset_x: usize, offset_y: usize) -> String {
-        format!("PX {} {} {:02x}{:02x}{:02x}\n", self.x+offset_x, self.y+offset_y, self.color.0, self.color.1, self.color.2)
+fn delta(old: &Frame, new: &Frame, args: &Args) -> FrameData {
+    assert_eq!(old.width, new.width);
+    assert_eq!(old.height, new.height);        
+    
+    let px_vec: Vec<_> = old.data.into_par_iter()
+        .zip(new.data.into_par_iter())
+        .enumerate()
+        .filter_map(|(i, (old_val, new_val))| {
+
+            // temporal chroma subsampling
+            let (old_y, old_u, old_v) = old_val.to_yuv();
+            let (new_y, new_u, new_v) = new_val.to_yuv();
+            
+            if old_y.abs_diff(new_y) as u16 > args.compression.luminance_treshold()
+            || old_u.abs_diff(new_u) as u16 + old_v.abs_diff(new_v) as u16 > args.compression.chroma_threshold(old_y) {
+                let x = i % old.width;
+                let y = i / old.width;
+                
+                Some(Pixel { x, y, color: *new_val })
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if px_vec.len() == 0 {
+        FrameData::Empty
+    } else {
+        FrameData::Delta(px_vec)
     }
 }
 
-fn get_framerate_cli(args: &Args) -> f64 {
+///////////////////////////////////////////////////////////////////////////
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct Color { pub r: u8, pub g: u8, pub b: u8 }
+
+impl Color {
+    #[inline]
+    pub fn new(r: u8, g: u8, b: u8) -> Self {
+        Self { r, g, b }
+    }
+    /// Converts RGB to YUV
+    // https://en.wikipedia.org/wiki/Y%E2%80%B2UV#Conversion_to/from_RGB
+    pub fn to_yuv(&self) -> (u8, u8, u8) {
+        let r = self.r as f32; let g = self.g as f32; let b = self.b as f32;
+        
+        let l = r * 0.299    + g * 0.587   + b * 0.114;
+        let u = r * -0.14713 - g * 0.28886 + b * 0.436   + 128.0;
+        let v = r * 0.615    - g * 0.51499 - b * 0.10001 + 128.0;
+
+        (l as u8, u as u8, v as u8)    
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct Pixel {
+    pub x: usize,
+    pub y: usize,
+    pub color: Color
+}
+
+#[derive(Debug, Clone)]
+pub enum FrameData {
+    Delta(Vec<Pixel>),
+    Full { width: u16, height: u16, data: Vec<Color> },
+    Empty
+}
+
+
+impl Pixel {    
+    fn to_pixelflut_string(&self, offset_x: usize, offset_y: usize) -> String {
+        format!("PX {} {} {:02x}{:02x}{:02x}\n", self.x+offset_x, self.y+offset_y, self.color.r, self.color.g, self.color.b)
+    }
+}
+
+fn get_framerate_cli(args: &Args) -> Result<f64> {
     // ffprobe -v 0 -of csv=p=0 -select_streams v:0 -show_entries stream=r_frame_rate infile
     let output = std::process::Command::new("ffprobe")
-        .arg("-v")
-        .arg("0")
-        .arg("-of")
-        .arg("csv=p=0")
-        .arg("-select_streams")
-        .arg("v:0")
-        .arg("-show_entries")
-        .arg("stream=r_frame_rate")
+        .arg("-v").arg("0")
+        .arg("-of").arg("csv=p=0")
+        .arg("-select_streams").arg("v:0")
+        .arg("-show_entries").arg("stream=r_frame_rate")
         .arg(&args.input)
         .output()
         .expect("failed to execute ffprobe");
     
-    let output = String::from_utf8(output.stdout).unwrap();
-    let output = output.lines().next().unwrap();
+    let output = String::from_utf8(output.stdout)
+        .expect("invalid UTF-8 from console");    
+    let first_line = output
+        .lines().next()
+        .ok_or(Error::FFmpegError("No output from command".to_string()))?;
 
-    let mut iter = output.split('/');    
-    let numerator = iter.next().unwrap().parse::<i32>().unwrap();
-    let denominator = iter.next().unwrap().parse::<i32>().unwrap();
-    numerator as f64 / denominator as f64
+    let mut iter = first_line.split('/');    
+    let numerator = iter.next()
+        .expect("Unreachable")
+        .parse::<i32>()
+        .map_err(|_| Error::FFmpegError(
+            format!("'{first_line}' is not a valid framerate")
+        ))?;
+    
+    let denominator = iter.next()
+        .ok_or(Error::FFmpegError(
+            format!("'{first_line}' is not a valid framerate")
+        ))?
+        .parse::<i32>()
+        .map_err(|_| Error::FFmpegError(
+            format!("'{first_line}' is not a valid framerate")
+        ))?;
 
+    Ok(numerator as f64 / denominator as f64)
 }
 
-fn extract_video_frames_cli(args: &Args) {
+fn extract_video_frames_cli(args: &Args) -> Result<()> {
     println!("Extracting frames ...");
     std::fs::create_dir_all(FRAMES_DIR).unwrap_or_else(|_| {});
     // ffmpeg -i infile out%d.ppm
@@ -283,33 +345,19 @@ fn extract_video_frames_cli(args: &Args) {
     options.arg("-vf");
     options.arg("fps=15");
     options.arg(format!("{FRAMES_DIR}/frame%d.ppm"));
-    options.output().expect("failed to execute ffmpeg");
-
-    options.status().expect("failed to execute ffmpeg");
+    options.output()
+        .map_err(|e| Error::FFmpegError(
+            format!("failed to execute ffmpeg{e}")
+        ))?;
+    Ok(())
 }
 
 fn compress_frame(last_frame: &Frame, new_frame: &Frame, idx: usize, args: &Args) -> FrameData {
-    if matches!(args.compression, CompressionLevel::AirstrikeMode) {
-        return FrameData::Full(
-            new_frame.width as u16, 
-            new_frame.height as u16, 
-            new_frame.data.to_vec()
-        );
-    }
-    if idx % args.compression.full_blank_interval() == 0 { // full frame every 100 frames to mitigate overwrites
-        FrameData::Full(
-            new_frame.width as u16, 
-            new_frame.height as u16, 
-            new_frame.data.to_vec()
-        )
+    if matches!(args.compression, CompressionLevel::AirstrikeMode) 
+    || idx % args.compression.full_blank_interval() == 0 { 
+        new_frame.to_full_frame_data()
     } else {
-        let data = Frame::delta(last_frame, new_frame, args);
-        
-        if data.len() == 0  {
-            FrameData::Empty
-        } else {
-            FrameData::Delta(data)
-        }
+        delta(last_frame, new_frame, args)
     }
 }
 
@@ -370,52 +418,73 @@ fn progress_tracker(counter: Arc<std::sync::atomic::AtomicUsize>, max: usize, de
 fn compress_frames_to_vec(args: &Args) -> Vec<FrameData> {
     println!("Compressing frames ...");
     
-    let mut frame_data_vec = Vec::new();
-    let mut last_frame: Option<Frame> = None;
+    
     let total_frames = std::fs::read_dir(FRAMES_DIR).unwrap().count();
+    let frame_data_vec = Arc::new(Mutex::new(vec![FrameData::Empty; total_frames]));
 
     let counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let progress = progress_tracker(Arc::clone(&counter), total_frames, "frames compressed".to_string());
 
-    for i in 0..total_frames {
-        let frame_id = i+1;
-        let src_path = format!("{FRAMES_DIR}/frame{frame_id}.ppm");
-        
-        let frame = Frame::from_file(&src_path, &args.compression)
-                        .expect(format!("failed to read frame {}", i).as_str());                    
-        
-        let frame_data = match &last_frame {
-            Some(lf) => {
-                let data = compress_frame(&lf, &frame, i, &args);
-                last_frame = Some(lf.apply_frame_data(&data));
-                if args.debug {
-                    let debug_frame = Frame::debug(frame.width, frame.height);
-                    let debug_frame = debug_frame.apply_frame_data(&data);
-                    FrameData::Full(
-                        debug_frame.width as u16, 
-                        debug_frame.height as u16, 
-                        debug_frame.data.to_vec()
-                    )
+    let frame_files = (1..=total_frames)
+        .into_par_iter()
+        .map(|i| FrameFile::new(i))       
+        .collect::<Vec<_>>();
+
+    let chunks = frame_files.rchunks(THREAD_COUNT);
+
+    let thread_pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(THREAD_COUNT)
+        .build()
+        .unwrap();
+
+    thread_pool.scope(|s| {
+        for chunk in chunks {
+            let counter = Arc::clone(&counter);
+            let frame_data_vec = Arc::clone(&frame_data_vec);
+            s.spawn(move |_| {
+                let mut thread_frame_data_vec = Vec::new();
+                let mut last_frame: Option<Frame> = None;
+                for frame_file in chunk {
+                    let frame = frame_file.load().unwrap();
+                    let frame_data = match &last_frame {
+                        Some(lf) => {
+                            let data = compress_frame(&lf, &frame, frame_file.idx, &args);
+                            last_frame = Some(lf.apply_frame_data(&data));
+                            if args.debug {
+                                let debug_frame = Frame::debug(frame.width, frame.height);
+                                let debug_frame = debug_frame.apply_frame_data(&data);
+                                debug_frame.to_full_frame_data()
+                            }
+                            else {
+                                data
+                            }
+                        },
+                        None => {
+                            let data = frame.to_full_frame_data();
+                            last_frame = Some(Frame {
+                                width: frame.width,
+                                height: frame.height,
+                                data: frame.data.clone(),
+                            });
+                            data
+                        }
+                    };
+                    thread_frame_data_vec.push(frame_data);
+                    counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
-                else {
-                    data
-                }
-            },
-            None => {
-                let data = FrameData::Full(frame.width as u16, frame.height as u16, frame.data.to_vec());
-                last_frame = Some(Frame {
-                    width: frame.width,
-                    height: frame.height,
-                    data: frame.data.clone(),
-                });
-                data
-            }
-        };
-        counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        frame_data_vec.push(frame_data);
-    }
+                frame_data_vec.lock().unwrap().splice(
+                    chunk[0].idx-1..chunk[0].idx-1+thread_frame_data_vec.len(), 
+                    thread_frame_data_vec
+                );
+            });
+        }
+    });
+
     progress.join().unwrap();
-    frame_data_vec
+    
+    Arc::try_unwrap(frame_data_vec)
+        .expect("More than 1 strong reference (impossible)")
+        .into_inner().unwrap()
 }
 fn gen_cache_id(args: &Args) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -428,7 +497,7 @@ fn gen_cache_id(args: &Args) -> u64 {
 fn is_cache_valid(args: &Args) -> std::io::Result<bool> {
     let hash = gen_cache_id(args);
 
-    let cache_id = File::open("cache_id")?;
+    let cache_id = File::open(CACHE_ID_PATH)?;
     let mut reader = BufReader::new(cache_id);
     let mut line = String::new();
     reader.read_line(&mut line)?;
@@ -446,9 +515,11 @@ fn main() {
     || !std::path::Path::new(FRAMES_DIR).exists()
     ||  args.nocache {
         std::fs::remove_dir_all(FRAMES_DIR).unwrap_or_else(|_| {});                
-        std::fs::remove_file("cache_id").unwrap_or_else(|_| {});        
-        extract_video_frames_cli(&args);                
-        std::fs::write("cache_id", gen_cache_id(&args).to_string()).unwrap();        
+        std::fs::remove_file(CACHE_ID_PATH).unwrap_or_else(|_| {});        
+        
+        extract_video_frames_cli(&args).unwrap();
+
+        std::fs::write(CACHE_ID_PATH, gen_cache_id(&args).to_string()).unwrap();        
     }    
 
     let frame_rate = 15.0;
@@ -476,7 +547,7 @@ fn main() {
             // get pixels
             let pixels = match frame_data {
                 FrameData::Delta(d) => d,
-                FrameData::Full(w,h,d) => {
+                FrameData::Full { width: w, height: h, data: d } => {
                     let frame = Frame {
                         width: w as usize,
                         height: h as usize,
