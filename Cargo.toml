@@ -12,3 +12,4 @@ crossterm = "0.27.0"
 rayon = "1.8.0"
 serde = { version = "1.0.195", features = ["derive"] }
 toml = "0.8.8"
+ufmt = { version = "0.2.0" }
