@@ -1,10 +1,7 @@
-use std::borrow::Borrow;
 use std::fs::File;
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader, BufWriter, Write, Read};
 use std::net::TcpStream;
-use std::ops::Deref;
-use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
@@ -128,10 +125,10 @@ impl CompressionLevel {
         match self {
             Self::AirstrikeMode => 0,
             Self::None => 0,
-            Self::Low => 5,
-            Self::Medium => 10,
-            Self::High => 20,
-            Self::TrashCompactor => 64,
+            Self::Low => 3,
+            Self::Medium => 7,
+            Self::High => 15,
+            Self::TrashCompactor => 32,
         }
     }
     pub fn chroma_threshold(&self, y: u8) -> u16 {
@@ -139,20 +136,20 @@ impl CompressionLevel {
         let t = match self {
             Self::AirstrikeMode => 0.0,
             Self::None => 0.0,
-            Self::Low => (1.0 - y) * 10.0,
-            Self::Medium => (1.0 - y.powi(2) * 0.85) * 20.0,
-            Self::High => (1.0 - y.powi(2) * 0.75) * 48.0,
-            Self::TrashCompactor => 96.0,
+            Self::Low => (1.0 - y) * 8.0,
+            Self::Medium => (1.0 - y.powi(2) * 0.85) * 16.0,
+            Self::High => (1.0 - y.powi(2) * 0.75) * 32.0,
+            Self::TrashCompactor => 64.0,
         };
         t as u16
     }
     pub fn full_blank_interval(&self) -> usize {
         match self {
             Self::AirstrikeMode => 1,
-            Self::None => 20,
-            Self::Low => 50,
-            Self::Medium => 100,
-            Self::High => 500,
+            Self::None => 150,
+            Self::Low => 300,
+            Self::Medium => 500,
+            Self::High => 1000,
             Self::TrashCompactor => 2000,
         }
     }
@@ -172,9 +169,12 @@ pub struct Args {
     y_offset: Option<usize>,
     
     #[clap(long)]
-    width: Option<u32>,
+    width: Option<i32>,
     #[clap(long)]
-    height: Option<u32>,
+    height: Option<i32>,
+
+    #[clap(long)]
+    fps: Option<f64>,
     
     #[clap(long)]
     nocache: bool,
@@ -243,19 +243,19 @@ impl FrameFile {
 }
 
 impl Frame {
-    fn debug(width: usize, height: usize) -> Self {
+    pub fn debug(width: usize, height: usize) -> Self {
         let data = vec![Color::new(128, 128, 128); width * height].into(); 
         Self { width, height, data }    
     }
 
-    fn to_full_frame_data(&self) -> FrameData {
+    pub fn to_full_frame_data(&self) -> FrameData {
         FrameData::Full {
             width: self.width as u16, 
             height: self.height as u16, 
             data: self.data.to_vec() 
         }
     }
-    fn apply_pixels(&self, pixels: &Vec<Pixel>) -> Self {
+    pub fn apply_pixels(&self, pixels: &Vec<Pixel>) -> Self {
         let mut data = self.data.clone();
         for p in pixels {
             let i = p.y * self.width + p.x;
@@ -267,7 +267,7 @@ impl Frame {
             data,
         }
     }
-    fn apply_frame_data(&self, data: &FrameData) -> Self {
+    pub fn apply_frame_data(&self, data: &FrameData) -> Self {
         match data {
             FrameData::Delta(d) => self.apply_pixels(d),
             FrameData::Full { width: w, height: h, data: d } => Self {
@@ -279,7 +279,7 @@ impl Frame {
         }
     }
 
-    fn to_pixels(&self) -> Vec<Pixel> {
+    pub fn to_pixels(&self) -> Vec<Pixel> {
         self.data.into_par_iter()
             .enumerate()
             .map(|(i, v)| {
@@ -331,7 +331,24 @@ pub enum FrameData {
     Full { width: u16, height: u16, data: Vec<Color> },
     Empty
 }
-
+impl FrameData {
+    pub fn to_pixels(self) -> Vec<Pixel> {
+        match self {
+            Self::Delta(d) => d,
+            Self::Full { width: w, height: h, data: d } => {
+                (0..w as usize * h as usize)
+                    .into_par_iter()
+                    .map(|i| {
+                        let x = i % w as usize;
+                        let y = i / w as usize;
+                        Pixel { x, y, color: d[i] }
+                    })
+                    .collect()
+            },
+            Self::Empty => Vec::new()
+        }
+    }
+}
 
 impl Pixel {    
     fn to_pixelflut_string(&self, offset_x: usize, offset_y: usize) -> String {
@@ -339,7 +356,7 @@ impl Pixel {
     }
 }
 
-fn get_framerate_cli(args: &Args) -> Result<f64> {
+pub fn get_video_framerate(args: &Args) -> Result<f64> {
     // ffprobe -v 0 -of csv=p=0 -select_streams v:0 -show_entries stream=r_frame_rate infile
     let output = std::process::Command::new("ffprobe")
         .arg("-v").arg("0")
@@ -376,7 +393,7 @@ fn get_framerate_cli(args: &Args) -> Result<f64> {
     Ok(numerator as f64 / denominator as f64)
 }
 
-fn extract_video_frames_cli(args: &Args) -> Result<()> {
+pub fn extract_video_frames(args: &Args) -> Result<()> {
     println!("Extracting frames ...");
     std::fs::create_dir_all(FRAMES_DIR).unwrap_or_else(|_| {});
     // ffmpeg -i infile out%d.ppm
@@ -384,7 +401,11 @@ fn extract_video_frames_cli(args: &Args) -> Result<()> {
     options.arg("-i");
     options.arg(&args.input);
     options.arg("-vf");
-    options.arg("fps=15");
+    options.arg(format!("fps={},scale={}:{}", 
+        args.fps.unwrap_or(15.0), 
+        args.width.unwrap_or(-1), 
+        args.height.unwrap_or(-1)
+    ));
     options.arg(format!("{FRAMES_DIR}/frame%d.ppm"));
     options.output()
         .map_err(|e| Error::FFmpegError(
@@ -394,7 +415,8 @@ fn extract_video_frames_cli(args: &Args) -> Result<()> {
 }
 
 
-fn progress_tracker(counter: Arc<std::sync::atomic::AtomicUsize>, max: usize, descr: String) -> JoinHandle<()> {    
+
+pub fn progress_tracker(counter: Arc<std::sync::atomic::AtomicUsize>, max: usize, descr: String) -> JoinHandle<()> {    
     thread::spawn(move || {
         let last_count = counter.load(std::sync::atomic::Ordering::Relaxed);
         let start = std::time::Instant::now();
@@ -446,7 +468,7 @@ fn progress_tracker(counter: Arc<std::sync::atomic::AtomicUsize>, max: usize, de
     })
 }
 
-fn compress_frames_to_vec(args: &Args) -> Vec<FrameData> {
+pub fn compress_frames_to_vec(args: &Args) -> Vec<FrameData> {
     println!("Compressing frames ...");
         
     let total_frames = std::fs::read_dir(FRAMES_DIR).unwrap().count();
@@ -460,7 +482,7 @@ fn compress_frames_to_vec(args: &Args) -> Vec<FrameData> {
         .map(|i| FrameFile::new(i))       
         .collect::<Vec<_>>();
 
-    let chunks = frame_files.rchunks(THREAD_COUNT);
+    let chunks = frame_files.chunks(200);
 
     let thread_pool = rayon::ThreadPoolBuilder::new()
         .num_threads(THREAD_COUNT)
@@ -472,7 +494,7 @@ fn compress_frames_to_vec(args: &Args) -> Vec<FrameData> {
             let counter = Arc::clone(&counter);
             let frame_data_vec = Arc::clone(&frame_data_vec);
             s.spawn(move |_| {
-                let mut thread_frame_data_vec = Vec::new();
+                let mut thread_frame_data_vec = Box::new(Vec::new());
                 let mut compressor = DeltaCompressorV1::new(args);
 
                 for frame_file in chunk {
@@ -483,7 +505,7 @@ fn compress_frames_to_vec(args: &Args) -> Vec<FrameData> {
                 
                 frame_data_vec.lock().unwrap().splice(
                     chunk[0].idx-1..chunk[0].idx-1+thread_frame_data_vec.len(), 
-                    thread_frame_data_vec
+                    thread_frame_data_vec.into_iter()
                 );
             });
         }
@@ -495,7 +517,8 @@ fn compress_frames_to_vec(args: &Args) -> Vec<FrameData> {
         .expect("More than 1 strong reference (impossible)")
         .into_inner().unwrap()
 }
-fn gen_cache_id(args: &Args) -> u64 {
+
+pub fn gen_cache_id(args: &Args) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     args.input.hash(&mut hasher);
     args.width.hash(&mut hasher);
@@ -503,7 +526,7 @@ fn gen_cache_id(args: &Args) -> u64 {
     hasher.finish()
 }
 
-fn is_cache_valid(args: &Args) -> std::io::Result<bool> {
+pub fn is_cache_valid(args: &Args) -> std::io::Result<bool> {
     let hash = gen_cache_id(args);
 
     let cache_id = File::open(CACHE_ID_PATH)?;
@@ -526,7 +549,7 @@ fn main() {
         std::fs::remove_dir_all(FRAMES_DIR).unwrap_or_else(|_| {});                
         std::fs::remove_file(CACHE_ID_PATH).unwrap_or_else(|_| {});        
         
-        extract_video_frames_cli(&args).unwrap();
+        extract_video_frames(&args).unwrap();
 
         std::fs::write(CACHE_ID_PATH, gen_cache_id(&args).to_string()).unwrap();        
     }    
@@ -548,29 +571,17 @@ fn main() {
         let stream = Arc::new(TcpStream::connect(HOST).unwrap());
         
         for frame_data in frame_data_vec.iter() {
-            let start_time = std::time::Instant::now();
-
-            let frame_data = frame_data.to_owned();
             // sleep thread
-            let dur = delay.saturating_sub(lag);
-            lag = lag.saturating_sub(delay);
-            let sleep = thread::spawn(move || {                
-                thread::sleep(std::time::Duration::from_millis(dur));
+            let start_time = std::time::Instant::now();
+            let frame_duration = delay.saturating_sub(lag);
+            let sleep_thread = thread::spawn(move || {                
+                thread::sleep(std::time::Duration::from_millis(frame_duration));
             });
-    
+            lag = lag.saturating_sub(delay);
+            
+            let frame_data = frame_data.to_owned();
             // get pixels
-            let pixels = match frame_data {
-                FrameData::Delta(d) => d,
-                FrameData::Full { width: w, height: h, data: d } => {
-                    let frame = Frame {
-                        width: w as usize,
-                        height: h as usize,
-                        data: d.into_boxed_slice(),
-                    };
-                    frame.to_pixels()
-                },
-                FrameData::Empty => Vec::new()
-            };
+            let pixels = frame_data.to_pixels();
     
             let len = pixels.len();
             if len != 0 {                
@@ -596,7 +607,7 @@ fn main() {
                 });
             }
 
-            sleep.join().unwrap();
+            sleep_thread.join().unwrap();
             let end_time = std::time::Instant::now();
             let elapsed = end_time.duration_since(start_time).as_millis() as u64;
             lag += elapsed.saturating_sub(delay);            
