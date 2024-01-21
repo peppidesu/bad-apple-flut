@@ -113,7 +113,7 @@ pub fn compress_frames_to_vec(args: &Args) -> Vec<FrameData> {
 
 fn main() {   
     let args = Args::parse();
-    let config = Config::load();
+
     let cache_key = args.clone().into();
 
     if !is_cache_valid(&cache_key).unwrap_or(false) 
