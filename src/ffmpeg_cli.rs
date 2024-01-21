@@ -1,8 +1,12 @@
+use std::process::Command;
+
 use crate::{Result, Error, FRAMES_DIR};
 
+
 pub fn get_video_framerate(input: &str) -> Result<f64> {
+    
     // ffprobe -v 0 -of csv=p=0 -select_streams v:0 -show_entries stream=r_frame_rate infile
-    let output = std::process::Command::new("ffprobe")
+    let output = Command::new("ffprobe")
         .arg("-v").arg("0")
         .arg("-of").arg("csv=p=0")
         .arg("-select_streams").arg("v:0")
@@ -41,7 +45,7 @@ pub fn extract_video_frames(input: &str, fps: f64, width: i32, height: i32) -> R
     println!("Extracting frames ...");
     std::fs::create_dir_all(FRAMES_DIR).unwrap_or_else(|_| {});
     // ffmpeg -i infile out%d.ppm
-    let mut options = std::process::Command::new("ffmpeg");
+    let mut options = Command::new("ffmpeg");
     options.arg("-i");
     options.arg(input);
     options.arg("-vf");

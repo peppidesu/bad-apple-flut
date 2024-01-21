@@ -6,6 +6,7 @@ mod compression;
 mod frame;
 mod color;
 mod pixel;
+mod config;
 
 pub use ffmpeg_cli::*;
 pub use cache::*;
@@ -14,6 +15,7 @@ pub use compression::*;
 pub use frame::*;
 pub use color::*;
 pub use pixel::*;
+pub use config::*;
 
 #[derive(Debug)]
 pub enum Error {

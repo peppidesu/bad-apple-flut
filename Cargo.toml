@@ -1,8 +1,12 @@
 [package]
 name = "bad-apple-flut"
-version = "0.1.0"
+version = "0.4.1"
 edition = "2021"
-
+authors = ["peppidesu"]
+description = "A video player for pixelflut written in Rust"
+homepage = "https://github.com/peppidesu/bad-apple-flut"
+repository = "https://github.com/peppidesu/bad-apple-flut"
+license = "AGPL-3.0"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
@@ -12,4 +16,3 @@ crossterm = "0.27.0"
 rayon = "1.8.0"
 serde = { version = "1.0.195", features = ["derive"] }
 toml = "0.8.8"
-ufmt = { version = "0.2.0" }

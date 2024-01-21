@@ -113,6 +113,7 @@ pub fn compress_frames_to_vec(args: &Args) -> Vec<FrameData> {
 
 fn main() {   
     let args = Args::parse();
+    let config = Config::load();
     let cache_key = args.clone().into();
 
     if !is_cache_valid(&cache_key).unwrap_or(false) 
@@ -142,10 +143,10 @@ fn main() {
 
     let frame_data_vec = compress_frames_to_vec(&args);
 
-    println!("Playing video on {HOST}");
+    println!("Playing video on {}", config.host);
     loop {
         
-        let stream = Arc::new(TcpStream::connect(HOST).unwrap());
+        let stream = Arc::new(TcpStream::connect(&config.host).unwrap());
         
         for frame_data in frame_data_vec.iter() {
             // sleep thread
@@ -168,7 +169,7 @@ fn main() {
                         args.x_offset.unwrap_or(0), 
                         args.y_offset.unwrap_or(0))
                     )
-                    .chunks(len.div_ceil(THREAD_COUNT)) // rchunks doesn't exist for par_iter, also we need the length anyway
+                    .chunks(len.div_ceil(config.thread_count)) // rchunks doesn't exist for par_iter, also we need the length anyway
                     .map(|c| c.join(""))
                     .collect::<Vec<_>>();
     
