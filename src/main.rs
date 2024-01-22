@@ -9,7 +9,7 @@ use bad_apple_flut::*;
 struct Context {
     args: Args,
     config: Config,
-    stream: Arc<TcpStream>,
+    stream: Option<Arc<TcpStream>>,
     metadata: VideoMetadata,
     thread_pool: ThreadPool,
 }
@@ -53,67 +53,24 @@ impl FrameTimer {
     }
 }
 
-fn progress_tracker(counter: Arc<std::sync::atomic::AtomicUsize>, max: usize, descr: String) -> JoinHandle<()> {    
-    thread::spawn(move || {
-        let last_count = counter.load(std::sync::atomic::Ordering::Relaxed);
-        let start = std::time::Instant::now();
-        let mut av_rate = 0.1;
-        let mut warmup = 0;        
-        
-        let cursorpos = crossterm::cursor::position().unwrap();
-
-        let print_over_line = |str| {
-            crossterm::execute!(std::io::stdout(), crossterm::cursor::MoveTo(0, cursorpos.1)).unwrap();
-            // clear
-            crossterm::execute!(std::io::stdout(), crossterm::terminal::Clear(crossterm::terminal::ClearType::CurrentLine)).unwrap();
-            crossterm::execute!(std::io::stdout(), crossterm::style::Print(str)).unwrap();            
-        };        
-
-        loop {
-            let count = counter.load(std::sync::atomic::Ordering::Relaxed);
-            warmup += 1;
-            if count == max {
-                println!("\nDone.");
-                break;
-            }
-            if warmup < 5 {
-                print_over_line(format!("{} / {} {}", count, max, descr));                
-            }
-            else {
-                let elapsed = start.elapsed().as_secs_f64();
-                
-                let rate = (count - last_count) as f64 / elapsed;
-                av_rate = av_rate * 0.95 + rate * 0.05;
-                
-                let eta = (max - count) as f64 / av_rate;
-    
-                let hrs = (eta / 3600.0) as i32;
-                let mins = ((eta - hrs as f64 * 3600.0) / 60.0) as i32;
-                let secs = (eta - hrs as f64 * 3600.0 - mins as f64 * 60.0) as i32;
-                if hrs > 0 {
-                    print_over_line(format!("{} / {} {} | ETA: {:}h{:02}m{:02}s", count, max, descr, hrs, mins, secs));
-                } else if mins > 0 {
-                    print_over_line(format!("{} / {} {} | ETA: {:}m{:02}s", count, max, descr, mins, secs));
-                } else {
-                    print_over_line(format!("{} / {} {} | ETA: {:}s", count, max, descr,  secs));
-                }
-            }
-    
-            
-            thread::sleep(std::time::Duration::from_millis(500));
-        }
-    })
-}
-
-fn compress_frames_to_vec(args: &Args, frame_count: usize) -> Vec<FrameData> {
+fn compress_frames_to_vec(context: &Context) -> Vec<FrameData> {
     println!("Compressing frames ...");
             
-    let frame_data_vec = Arc::new(Mutex::new(vec![FrameData::Empty; frame_count]));
+    let frame_data_vec = Arc::new(
+        Mutex::new(
+            vec![FrameData::Empty; context.metadata.frame_count]
+        )
+    );
 
     let counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let progress = progress_tracker(Arc::clone(&counter), frame_count, "frames compressed".to_string());
 
-    let frame_files = (1..=frame_count)
+    let progress = progress_tracker(
+        counter.clone(), 
+        context.metadata.frame_count, 
+        "frames compressed".to_string()
+    );
+
+    let frame_files = (1..=context.metadata.frame_count)
         .into_par_iter()
         .map(|i| FrameFile::new(i))       
         .collect::<Vec<_>>();
@@ -121,7 +78,7 @@ fn compress_frames_to_vec(args: &Args, frame_count: usize) -> Vec<FrameData> {
     let chunks = frame_files.chunks(200);
 
     let thread_pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(THREAD_COUNT)
+        .num_threads(context.config.thread_count)
         .build()
         .unwrap();
 
@@ -132,8 +89,8 @@ fn compress_frames_to_vec(args: &Args, frame_count: usize) -> Vec<FrameData> {
             s.spawn(move |_| {
                 let mut thread_frame_data_vec = Box::new(Vec::new());
                 let mut compressor = DeltaCompressorV1::new(
-                    args.compression.into(), 
-                    args.debug
+                    context.args.compression.into(), 
+                    context.args.debug
                 );
 
                 for frame_file in chunk {
@@ -173,7 +130,7 @@ fn send_frame(context: &Context, frame_data: &FrameData) {
 
         context.thread_pool.scope(|s| {
             for msg in msgs {
-                let stream = Arc::clone(&context.stream);
+                let stream = Arc::clone(&context.stream.as_ref().expect("Stream not initialized"));
                 s.spawn(move |_| {
                     let mut writer = BufWriter::new(stream.as_ref());
                     writer.write_all(msg.as_bytes()).unwrap();
@@ -192,8 +149,8 @@ fn loop_just_in_time(context: &Context) -> Result<()> {
     );
     loop {
         for i in 1..=context.metadata.frame_count {
-            timer.start();
-            let frame = FrameFile::new(i).load()?;
+            timer.start();            
+            let frame = FrameFile::new(i).load()?;           
             let frame_data = compressor.compress_frame(&frame);            
             send_frame(&context, &frame_data);
             timer.wait();
@@ -212,9 +169,64 @@ fn loop_ahead_of_time(context: &Context, frames: Vec<FrameData>) -> Result<()> {
     }
 }
 
-fn main() -> Result<()> {   
+pub fn verify_args(args: &Args) -> Result<()> {
+    if args.width.is_some() && args.width.unwrap() < 0 {
+        return Err(Error::InvalidArgs(
+            "--width must be positive".to_string()
+        ));
+    }
+    if args.height.is_some() && args.height.unwrap() < 0 {
+        return Err(Error::InvalidArgs(
+            "--height must be positive".to_string()
+        ));
+    }
+    if args.fps.is_some() && args.fps.unwrap() <= 0.0 {
+        return Err(Error::InvalidArgs(
+            "--fps must be greater than 0.0".to_string()
+        ));
+    }
+    if args.input.is_empty() {
+        return Err(Error::InvalidArgs(
+            "No input file specified".to_string()
+        ));
+    }
+    let path = std::path::Path::new(&args.input);
+    if !path.exists() {
+        return Err(Error::InvalidArgs(
+            format!("Input file '{}' does not exist", path.to_str().unwrap())
+        ));
+    }
+    if !path.is_file() {
+        return Err(Error::InvalidArgs(
+            format!("Input file '{}' is not a file", path.to_str().unwrap())
+        ));
+    }
+    
+    Ok(())
+}
+pub fn verify_config(config: &Config) -> Result<()> {
+    if config.thread_count == 0 {
+        return Err(Error::InvalidConfig(
+            "Thread count must be greater than 0".to_string()
+        ));
+    }
+    if config.host.is_empty() {
+        return Err(Error::InvalidConfig(
+            "Host must not be empty".to_string()
+        ));
+    }
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {   
     let args = Args::parse();
     let config = Config::load()?;
+
+    verify_args(&args)?;
+    verify_config(&config).unwrap_or_else(|e| {
+        eprintln!("Invalid config: {:?}", e);
+    });    
 
     let cache_key = args.clone().into();
 
@@ -224,11 +236,11 @@ fn main() -> Result<()> {
         let metadata = extract_video_frames(
             &args.input,
             args.fps.unwrap_or(
-                get_video_framerate(&args.input).unwrap()
+                get_video_framerate(&args.input).await?
             ),
             args.width.unwrap_or(-1),
             args.height.unwrap_or(-1)
-        )?;
+        ).await?;
         
         metadata.write()?;
 
@@ -241,20 +253,20 @@ fn main() -> Result<()> {
         .build()
         .unwrap();
     
-    let stream = Arc::new(TcpStream::connect(&config.host).unwrap());
-    
-    let context = Context {
+    let mut context = Context {
         args,
         config,
-        stream,
+        stream: None,
         metadata,
         thread_pool,
     };
     if context.args.jit {
+        context.stream = Some(Arc::new(TcpStream::connect(&context.config.host).unwrap()));                           
         println!("Playing video on {}", context.config.host);
         loop_just_in_time(&context)?;
     } else {
-        let frame_data_vec = compress_frames_to_vec(&context.args, context.metadata.frame_count);
+        let frame_data_vec = compress_frames_to_vec(&context);
+        context.stream = Some(Arc::new(TcpStream::connect(&context.config.host).unwrap()));    
         println!("Playing video on {}", context.config.host);
         loop_ahead_of_time(&context, frame_data_vec)?;
     }

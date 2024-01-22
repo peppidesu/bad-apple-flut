@@ -8,6 +8,7 @@ mod color;
 mod pixel;
 mod config;
 
+
 pub use ffmpeg_cli::*;
 pub use cache::*;
 pub use args::*;
@@ -19,11 +20,15 @@ pub use config::*;
 
 pub mod paths;
 
+use std::{thread::{self, JoinHandle}, sync::Arc};
+
 #[derive(Debug)]
 pub enum Error {
     Io(std::io::Error),
     FileParseError(String),
     FFmpegError(String),
+    InvalidArgs(String),
+    InvalidConfig(String),
 }
 
 pub type Result<T> = core::result::Result<T, Error>;
@@ -32,5 +37,55 @@ impl From<std::io::Error> for Error {
     fn from(e: std::io::Error) -> Self { Self::Io(e) }
 }
 
-pub const HOST: &str = "pixelflut.uwu.industries:1234";
-pub const THREAD_COUNT: usize = 12;
+
+pub fn progress_tracker(counter: Arc<std::sync::atomic::AtomicUsize>, max: usize, descr: String) -> JoinHandle<()> {    
+    thread::spawn(move || {
+        let last_count = counter.load(std::sync::atomic::Ordering::Relaxed);
+        let start = std::time::Instant::now();
+        let mut av_rate = 0.1;
+        let mut warmup = 0;        
+        
+        let cursorpos = crossterm::cursor::position().unwrap();
+
+        let print_over_line = |str| {
+            crossterm::execute!(std::io::stdout(), crossterm::cursor::MoveTo(0, cursorpos.1)).unwrap();
+            // clear
+            crossterm::execute!(std::io::stdout(), crossterm::terminal::Clear(crossterm::terminal::ClearType::CurrentLine)).unwrap();
+            crossterm::execute!(std::io::stdout(), crossterm::style::Print(str)).unwrap();            
+        };        
+
+        loop {
+            let count = counter.load(std::sync::atomic::Ordering::Relaxed);
+            warmup += 1;
+            if count == max {
+                println!("\nDone.");
+                break;
+            }
+            if warmup < 5 {
+                print_over_line(format!("{} / {} {}", count, max, descr));                
+            }
+            else {
+                let elapsed = start.elapsed().as_secs_f64();
+                
+                let rate = (count - last_count) as f64 / elapsed;
+                av_rate = av_rate * 0.95 + rate * 0.05;
+                
+                let eta = (max - count) as f64 / av_rate;
+    
+                let hrs = (eta / 3600.0) as i32;
+                let mins = ((eta - hrs as f64 * 3600.0) / 60.0) as i32;
+                let secs = (eta - hrs as f64 * 3600.0 - mins as f64 * 60.0) as i32;
+                if hrs > 0 {
+                    print_over_line(format!("{} / {} {} | ETA: {:}h{:02}m{:02}s", count, max, descr, hrs, mins, secs));
+                } else if mins > 0 {
+                    print_over_line(format!("{} / {} {} | ETA: {:}m{:02}s", count, max, descr, mins, secs));
+                } else {
+                    print_over_line(format!("{} / {} {} | ETA: {:}s", count, max, descr,  secs));
+                }
+            }
+    
+            
+            thread::sleep(std::time::Duration::from_millis(500));
+        }
+    })
+}
