@@ -1,0 +1,26 @@
+name: Publish on release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+    build:
+        name: Build binaries
+        runs-on: ubuntu-latest
+        steps:
+
+          - name: '📄 Checkout'
+            uses: actions/checkout@v3
+
+          - name: '📦 Package linux x64'
+            run: |
+                cd ${{github.workspace}}
+                cargo aur
+                gh release upload ${{github.event.release.tag_name}} target/cargo-aur/*.tar.gz
+            env:
+              GITHUB_TOKEN: ${{ github.TOKEN }}
+            shell: bash
