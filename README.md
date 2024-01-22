@@ -1,5 +1,6 @@
 # bad-apple-flut
-a general-purpose pixelflut video player.
+A general-purpose pixelflut video player. 
+https://github.com/defnull/pixelflut
 
 ## Dependencies
 bad-apple-flut depends on `ffmpeg` for extracting frames from videos and applying the scaling + frame-rate conversion.
