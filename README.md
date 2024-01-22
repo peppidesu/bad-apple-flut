@@ -52,7 +52,7 @@ Contributions to the project are welcome, so feel free to suggest changes or rep
 ## Special thanks
 - [patagona](https://github.com/patagonaa), for hosting the pixelflut server that gave birth to this project
 - The awsome people in the Crow Academy discord server who also made pixelflut clients:
-  - berries :3
+  - berries
   - ked
   - trintler
   - vym
