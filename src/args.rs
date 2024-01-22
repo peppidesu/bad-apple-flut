@@ -3,32 +3,43 @@ use clap::{Parser, ValueEnum};
 use crate::cache::CacheKey;
 
 #[derive(Parser, Clone)]
+#[command(author, version, about, long_about = None)]
 pub struct Args {
+    /// Input file
     #[clap(short, long)]
     pub input: String,
 
-    #[clap(short)]
-    pub x_offset: Option<usize>,
+    /// Horizontal offset (in px)
+    #[clap(short, default_value = "0")]
+    pub x_offset: usize,
 
-    #[clap(short)]
-    pub y_offset: Option<usize>,
+    /// Vertical offset (in px)
+    #[clap(short, default_value = "0")]
+    pub y_offset: usize,
     
+    /// Width (in px) [default: same as source]
     #[clap(long)]
     pub width: Option<i32>,
+
+    /// Height (in px) [default: same as source]
     #[clap(long)]
     pub height: Option<i32>,
 
+    /// Frame-rate (in fps) [default: same as source]
     #[clap(long)]
     pub fps: Option<f64>,
     
+    /// Compression level
+    #[clap(long, default_value = "medium")]
+    pub compression: CompressionLevelArg,
+    
+    /// Ignore frame cache
     #[clap(long)]
     pub nocache: bool,
 
+    /// Compress frames just-in-time
     #[clap(long)]
     pub jit: bool,
-
-    #[clap(long, default_value = "medium")]
-    pub compression: CompressionLevelArg,
 
     #[clap(long)]
     pub debug: bool

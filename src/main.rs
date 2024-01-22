@@ -164,8 +164,8 @@ fn send_frame(context: &Context, frame_data: &FrameData) {
         // send pixels
         let msgs = pixels.into_par_iter()
             .map(|p| p.to_pixelflut_string(
-                context.args.x_offset.unwrap_or(0), 
-                context.args.y_offset.unwrap_or(0))
+                context.args.x_offset, 
+                context.args.y_offset)
             )
             .chunks(len.div_ceil(context.config.thread_count))
             .map(|c| c.join(""))
