@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 pub fn cache() -> PathBuf {
     dirs::cache_dir().unwrap()
-        .join("bad_apple_flut")
+        .join("bad-apple-flut")
 }
 pub fn cache_id() -> PathBuf {
     cache().join("cache_id")
@@ -19,7 +19,7 @@ pub fn frame_file(idx: usize) -> PathBuf {
 
 pub fn config_dir() -> PathBuf {
     dirs::config_dir().unwrap()
-        .join("bad_apple_flut")
+        .join("bad-apple-flut")
 }
 pub fn config_file() -> PathBuf {
     config_dir().join("config.toml")
