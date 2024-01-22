@@ -19,6 +19,7 @@ jobs:
           - name: '📦 Package linux x64'
             run: |
                 cd ${{github.workspace}}
+                cargo install cargo-aur
                 cargo aur
                 gh release upload ${{github.event.release.tag_name}} target/cargo-aur/*.tar.gz
             env:
