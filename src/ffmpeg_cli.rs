@@ -1,6 +1,6 @@
 use std::process::Command;
 
-use crate::{Result, Error, FRAMES_DIR};
+use crate::{Result, Error, paths, VideoMetadata};
 
 
 pub fn get_video_framerate(input: &str) -> Result<f64> {
@@ -13,47 +13,54 @@ pub fn get_video_framerate(input: &str) -> Result<f64> {
         .arg("-show_entries").arg("stream=r_frame_rate")
         .arg(input)
         .output()
-        .expect("failed to execute ffprobe");
+        .map_err(|e| Error::FFmpegError(
+            format!("failed to execute ffprobe: {e}")
+        ))?;        
     
     let output = String::from_utf8(output.stdout)
-        .expect("invalid UTF-8 from console");    
+        .expect("Invalid UTF-8 from console");    
     let first_line = output
-        .lines().next()
-        .ok_or(Error::FFmpegError("No output from command".to_string()))?;
+        .lines().next().expect("No output from ffprobe");        
 
     let mut iter = first_line.split('/');    
     let numerator = iter.next()
-        .expect("Unreachable")
+        .unwrap() // unreachable
         .parse::<i32>()
-        .map_err(|_| Error::FFmpegError(
-            format!("'{first_line}' is not a valid framerate")
-        ))?;
+        .expect(&format!("'{first_line}' is not a valid framerate"));
     
     let denominator = iter.next()
-        .ok_or(Error::FFmpegError(
-            format!("'{first_line}' is not a valid framerate")
-        ))?
+        .expect("Missing denominator")
         .parse::<i32>()
-        .map_err(|_| Error::FFmpegError(
-            format!("'{first_line}' is not a valid framerate")
-        ))?;
+        .expect(&format!(""));
 
     Ok(numerator as f64 / denominator as f64)
 }
 
-pub fn extract_video_frames(input: &str, fps: f64, width: i32, height: i32) -> Result<()> {
-    println!("Extracting frames ...");
-    std::fs::create_dir_all(FRAMES_DIR).unwrap_or_else(|_| {});
-    // ffmpeg -i infile out%d.ppm
+pub fn extract_video_frames(input: &str, fps: f64, width: i32, height: i32) -> Result<VideoMetadata> {
+    println!("Extracting frames to {} ...", paths::cache_frames().to_str().unwrap());
+    
+    if let Err(e) = std::fs::create_dir_all(paths::cache_frames()) {
+        match e.kind() {
+            std::io::ErrorKind::AlreadyExists => {},
+            _ => return Err(Error::Io(e))
+        }
+    }       
+    
+    // TODO: realtime progress
+    // https://superuser.com/questions/1459810/how-can-i-get-ffmpeg-command-running-status-in-real-time
+
     let mut options = Command::new("ffmpeg");
     options.arg("-i");
     options.arg(input);
     options.arg("-vf");
     options.arg(format!("fps={fps},scale={width}:{height}"));
-    options.arg(format!("{FRAMES_DIR}/frame%d.ppm"));
+    options.arg(format!("{}/frame%d.ppm", paths::cache_frames().to_str().unwrap()));
     options.output()
         .map_err(|e| Error::FFmpegError(
             format!("failed to execute ffmpeg{e}")
         ))?;
-    Ok(())
+    
+    let frame_count = std::fs::read_dir(paths::cache_frames())?.count();
+
+    Ok(VideoMetadata::create(fps, frame_count))
 }

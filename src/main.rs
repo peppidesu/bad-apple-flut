@@ -2,11 +2,58 @@ use std::io::{BufWriter, Write};
 use std::net::TcpStream;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use rayon::prelude::*;
+use rayon::{prelude::*, ThreadPool};
 
 use bad_apple_flut::*;
 
-pub fn progress_tracker(counter: Arc<std::sync::atomic::AtomicUsize>, max: usize, descr: String) -> JoinHandle<()> {    
+struct Context {
+    args: Args,
+    config: Config,
+    stream: Arc<TcpStream>,
+    metadata: VideoMetadata,
+    thread_pool: ThreadPool,
+}
+
+struct FrameTimer {
+    start: std::time::Instant,
+    delay: u64,
+    duration: u64,
+    lag: u64,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl FrameTimer {
+    pub fn new(fps: f64) -> Self {
+        Self {
+            start: std::time::Instant::now(),
+            delay: (1000.0 / fps) as u64,
+            duration: 0,
+            lag: 0,
+            handle: None,
+        }
+    }
+    pub fn start(&mut self) {
+        self.start = std::time::Instant::now();
+
+        self.duration = self.delay.saturating_sub(self.lag);
+        let duration = self.duration; // required bc of move into thread
+        self.handle = Some(thread::spawn(move || {                
+            thread::sleep(std::time::Duration::from_millis(duration));
+        }));
+        self.lag = self.lag.saturating_sub(self.delay);
+    }
+    pub fn wait(&mut self) {
+        self.handle.take()
+            .expect("wait() called before start()")
+            .join().unwrap();
+
+        let end_time = std::time::Instant::now();
+        let elapsed = end_time.duration_since(self.start).as_millis() as u64;
+        self.lag += elapsed.saturating_sub(self.duration);            
+    }
+}
+
+fn progress_tracker(counter: Arc<std::sync::atomic::AtomicUsize>, max: usize, descr: String) -> JoinHandle<()> {    
     thread::spawn(move || {
         let last_count = counter.load(std::sync::atomic::Ordering::Relaxed);
         let start = std::time::Instant::now();
@@ -58,16 +105,15 @@ pub fn progress_tracker(counter: Arc<std::sync::atomic::AtomicUsize>, max: usize
     })
 }
 
-pub fn compress_frames_to_vec(args: &Args) -> Vec<FrameData> {
+fn compress_frames_to_vec(args: &Args, frame_count: usize) -> Vec<FrameData> {
     println!("Compressing frames ...");
-        
-    let total_frames = std::fs::read_dir(FRAMES_DIR).unwrap().count();
-    let frame_data_vec = Arc::new(Mutex::new(vec![FrameData::Empty; total_frames]));
+            
+    let frame_data_vec = Arc::new(Mutex::new(vec![FrameData::Empty; frame_count]));
 
     let counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let progress = progress_tracker(Arc::clone(&counter), total_frames, "frames compressed".to_string());
+    let progress = progress_tracker(Arc::clone(&counter), frame_count, "frames compressed".to_string());
 
-    let frame_files = (1..=total_frames)
+    let frame_files = (1..=frame_count)
         .into_par_iter()
         .map(|i| FrameFile::new(i))       
         .collect::<Vec<_>>();
@@ -111,84 +157,107 @@ pub fn compress_frames_to_vec(args: &Args) -> Vec<FrameData> {
         .into_inner().unwrap()
 }
 
-fn main() {   
+fn send_frame(context: &Context, frame_data: &FrameData) {
+    let pixels = frame_data.to_owned().to_pixels();
+    let len = pixels.len();
+    if len != 0 {                
+        // send pixels
+        let msgs = pixels.into_par_iter()
+            .map(|p| p.to_pixelflut_string(
+                context.args.x_offset.unwrap_or(0), 
+                context.args.y_offset.unwrap_or(0))
+            )
+            .chunks(len.div_ceil(context.config.thread_count))
+            .map(|c| c.join(""))
+            .collect::<Vec<_>>();
+
+        context.thread_pool.scope(|s| {
+            for msg in msgs {
+                let stream = Arc::clone(&context.stream);
+                s.spawn(move |_| {
+                    let mut writer = BufWriter::new(stream.as_ref());
+                    writer.write_all(msg.as_bytes()).unwrap();
+                    writer.flush().unwrap();
+                });
+            }
+        });
+    }
+}
+
+fn loop_just_in_time(context: &Context) -> Result<()> {
+    let mut timer = FrameTimer::new(context.metadata.fps);
+    let mut compressor = DeltaCompressorV1::new(
+        context.args.compression.into(), 
+        context.args.debug
+    );
+    loop {
+        for i in 1..=context.metadata.frame_count {
+            timer.start();
+            let frame = FrameFile::new(i).load()?;
+            let frame_data = compressor.compress_frame(&frame);            
+            send_frame(&context, &frame_data);
+            timer.wait();
+        }
+    }
+}
+
+fn loop_ahead_of_time(context: &Context, frames: Vec<FrameData>) -> Result<()> {
+    let mut timer = FrameTimer::new(context.metadata.fps);
+    loop {
+        for frame_data in frames.iter() {
+            timer.start();
+            send_frame(&context, frame_data);
+            timer.wait();
+        }
+    }
+}
+
+fn main() -> Result<()> {   
     let args = Args::parse();
+    let config = Config::load()?;
 
     let cache_key = args.clone().into();
 
-    if !is_cache_valid(&cache_key).unwrap_or(false) 
-    || !std::path::Path::new(FRAMES_DIR).exists()
-    ||  args.nocache {
-        std::fs::remove_dir_all(FRAMES_DIR).unwrap_or_else(|_| {});                
-        std::fs::remove_file(CACHE_ID_PATH).unwrap_or_else(|_| {});        
+    if !is_cache_valid(&cache_key).unwrap_or(false) || args.nocache {
+        clean_cache()?;       
         
-        extract_video_frames(
+        let metadata = extract_video_frames(
             &args.input,
-            args.fps.unwrap_or(15.0),
+            args.fps.unwrap_or(
+                get_video_framerate(&args.input).unwrap()
+            ),
             args.width.unwrap_or(-1),
             args.height.unwrap_or(-1)
-        ).unwrap();
+        )?;
+        
+        metadata.write()?;
 
-        std::fs::write(CACHE_ID_PATH, gen_cache_id(&cache_key).to_string()).unwrap();        
+        write_cache_id(&cache_key)?;     
     }    
-
-    let frame_rate = args.fps.unwrap_or(15.0);
-    let delay = (1000.0 / frame_rate) as u64;
-    let mut lag = 0;
+    let metadata = VideoMetadata::load()?;
 
     let thread_pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(THREAD_COUNT)
+        .num_threads(config.thread_count)
         .build()
         .unwrap();
-
-    let frame_data_vec = compress_frames_to_vec(&args);
-
-    println!("Playing video on {}", config.host);
-    loop {
-        
-        let stream = Arc::new(TcpStream::connect(&config.host).unwrap());
-        
-        for frame_data in frame_data_vec.iter() {
-            // sleep thread
-            let start_time = std::time::Instant::now();
-            let frame_duration = delay.saturating_sub(lag);
-            let sleep_thread = thread::spawn(move || {                
-                thread::sleep(std::time::Duration::from_millis(frame_duration));
-            });
-            lag = lag.saturating_sub(delay);
-            
-            let frame_data = frame_data.to_owned();
-            // get pixels
-            let pixels = frame_data.to_pixels();
     
-            let len = pixels.len();
-            if len != 0 {                
-                // send pixels
-                let msgs = pixels.into_par_iter()
-                    .map(|p| p.to_pixelflut_string(
-                        args.x_offset.unwrap_or(0), 
-                        args.y_offset.unwrap_or(0))
-                    )
-                    .chunks(len.div_ceil(config.thread_count)) // rchunks doesn't exist for par_iter, also we need the length anyway
-                    .map(|c| c.join(""))
-                    .collect::<Vec<_>>();
+    let stream = Arc::new(TcpStream::connect(&config.host).unwrap());
     
-                thread_pool.scope(|s| {
-                    for msg in msgs {
-                        let stream = Arc::clone(&stream);
-                        s.spawn(move |_| {
-                            let mut writer = BufWriter::new(stream.as_ref());
-                            writer.write_all(msg.as_bytes()).unwrap();
-                            writer.flush().unwrap();
-                        });
-                    }
-                });
-            }
+    let context = Context {
+        args,
+        config,
+        stream,
+        metadata,
+        thread_pool,
+    };
+    if context.args.jit {
+        println!("Playing video on {}", context.config.host);
+        loop_just_in_time(&context)?;
+    } else {
+        let frame_data_vec = compress_frames_to_vec(&context.args, context.metadata.frame_count);
+        println!("Playing video on {}", context.config.host);
+        loop_ahead_of_time(&context, frame_data_vec)?;
+    }
 
-            sleep_thread.join().unwrap();
-            let end_time = std::time::Instant::now();
-            let elapsed = end_time.duration_since(start_time).as_millis() as u64;
-            lag += elapsed.saturating_sub(delay);            
-        }
-    }    
+    Ok(())
 }

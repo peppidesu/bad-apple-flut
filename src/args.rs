@@ -24,12 +24,16 @@ pub struct Args {
     #[clap(long)]
     pub nocache: bool,
 
+    #[clap(long)]
+    pub jit: bool,
+
     #[clap(long, default_value = "medium")]
     pub compression: CompressionLevelArg,
 
     #[clap(long)]
-    pub debug: bool,
+    pub debug: bool
 }
+
 impl Args {
     pub fn parse() -> Self {
         Self::parse_from(std::env::args())
@@ -42,6 +46,7 @@ impl From<Args> for CacheKey {
             args.input,
             args.width.unwrap_or(0),
             args.height.unwrap_or(0),
+            args.fps.unwrap_or(0.0)
         )
     }
 }

@@ -17,6 +17,8 @@ pub use color::*;
 pub use pixel::*;
 pub use config::*;
 
+pub mod paths;
+
 #[derive(Debug)]
 pub enum Error {
     Io(std::io::Error),
@@ -31,6 +33,4 @@ impl From<std::io::Error> for Error {
 }
 
 pub const HOST: &str = "pixelflut.uwu.industries:1234";
-pub const FRAMES_DIR: &str = "cache/frames";
-pub const CACHE_ID_PATH: &str = "cache/cache_id";
 pub const THREAD_COUNT: usize = 12;

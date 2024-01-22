@@ -19,3 +19,16 @@ impl Color {
         (l as u8, u as u8, v as u8)    
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_case::*;
+    
+    #[case(255, 255, 255, 255, 128, 128)]
+    #[case(0, 0, 0, 0, 128, 128)]
+    fn test_color_to_yuv(r: u8, g: u8, b: u8, y: u8, u: u8, v: u8) {
+        let c = Color::new(r, g, b);
+        assert_eq!(c.to_yuv(), (y, u, v));
+    }    
+}

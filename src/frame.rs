@@ -1,10 +1,12 @@
 use std::fs::File;
 use std::io::{BufReader, BufRead, Read};
+use std::path::PathBuf;
 
 use rayon::prelude::*;
 
+use crate::paths;
 use crate::{
-    FRAMES_DIR, Result, Error,
+    Result, Error,
     color::Color, 
     pixel::Pixel
 };
@@ -13,12 +15,12 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct FrameFile {
     idx: usize,
-    path: String
+    path: PathBuf
 }
 
 impl FrameFile {
     pub fn new(idx: usize) -> Self {
-        let path = format!("{FRAMES_DIR}/frame{idx}.ppm");
+        let path = paths::frame_file(idx);
         
         Self { idx, path }
     }
