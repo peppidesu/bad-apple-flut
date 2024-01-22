@@ -1,5 +1,6 @@
 # bad-apple-flut
-a general-purpose pixelflut video player.
+A general-purpose pixelflut video player. 
+https://github.com/defnull/pixelflut
 
 ## Dependencies
 bad-apple-flut depends on `ffmpeg` for extracting frames from videos and applying the scaling + frame-rate conversion.
@@ -27,7 +28,7 @@ The input file can be any video format so long as ffmpeg supports it.
 ### Frame extraction & cache directories
 Video frames are extracted and stored in a cache directory ahead-of-time, due to limitations of the ffmpeg CLI and performance considerations. This cache directory is stored in `<cache_dir>/bad-apple-flut`, where `<cache_dir>` is the users cache directory (see https://docs.rs/dirs/latest/dirs/fn.cache_dir.html).
 
-Be aware that this cache directory can become very large for long videos, so make sure you have sufficient disk space available. 20 GB of free disk space is the recommended minimum. A solution for reducing the cache size is planned for a future update.
+Be aware that this cache directory can become very large for long videos, so make sure you have sufficient disk space available. 20 GB of free disk space is the recommended minimum. A solution for reducing the cache size is planned and will be added in a future update.
 
 ### JIT compression
 By default, bad-apple-flut will generate the compressed data stream ahead-of-time in RAM to improve streaming performance. This means bad-apple-flut may run out of memory for long/high-resolution videos.
@@ -51,7 +52,7 @@ Contributions to the project are welcome, so feel free to suggest changes or rep
 ## Special thanks
 - [patagona](https://github.com/patagonaa), for hosting the pixelflut server that gave birth to this project
 - The awsome people in the Crow Academy discord server who also made pixelflut clients:
-  - berries :3
+  - berries
   - ked
   - trintler
   - vym
