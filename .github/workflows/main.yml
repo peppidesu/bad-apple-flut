@@ -22,6 +22,7 @@ jobs:
                 cargo install cargo-aur
                 cargo aur
                 gh release upload ${{github.event.release.tag_name}} target/cargo-aur/*.tar.gz
+                gh release upload ${{github.event.release.tag_name}} PKGBUILD
             env:
               GITHUB_TOKEN: ${{ github.TOKEN }}
             shell: bash
