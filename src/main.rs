@@ -9,7 +9,7 @@ use bad_apple_flut::*;
 struct Context {
     args: Args,
     config: Config,
-    stream: Option<Arc<TcpStream>>,
+    stream: Option<Arc<Mutex<TcpStream>>>,
     metadata: VideoMetadata,
     thread_pool: ThreadPool,
 }
@@ -119,22 +119,22 @@ fn send_frame(context: &Context, frame_data: &FrameData) {
     let len = pixels.len();
     if len != 0 {                
         // send pixels
-        let msgs = pixels.into_par_iter()
-            .map(|p| p.to_pixelflut_string(
+        let msgs = pixels.par_chunks(400)
+            .map(|chunk| pixels_to_string(
+                chunk, 
                 context.args.x_offset, 
-                context.args.y_offset)
-            )
-            .chunks(len.div_ceil(context.config.thread_count))
-            .map(|c| c.join(""))
+                context.args.y_offset
+            ))
             .collect::<Vec<_>>();
+            
 
         context.thread_pool.scope(|s| {
             for msg in msgs {
-                let stream = Arc::clone(&context.stream.as_ref().expect("Stream not initialized"));
-                s.spawn(move |_| {
-                    let mut writer = BufWriter::new(stream.as_ref());
-                    writer.write_all(msg.as_bytes()).unwrap();
-                    writer.flush().unwrap();
+                let stream = Arc::clone(&context.stream.as_ref().expect("Stream not initialized"));               
+                s.spawn(move |_| {                  
+                    let mut stream = stream.lock().unwrap();
+                    stream.write_all(msg.as_bytes()).unwrap();                     
+                    stream.flush().unwrap();
                 });
             }
         });
@@ -261,12 +261,24 @@ async fn main() -> Result<()> {
         thread_pool,
     };
     if context.args.jit {
-        context.stream = Some(Arc::new(TcpStream::connect(&context.config.host).unwrap()));                           
+        context.stream = Some(
+            Arc::new(
+                Mutex::new(
+                    TcpStream::connect(&context.config.host).unwrap()
+                )
+            )
+        );                           
         println!("Playing video on {}", context.config.host);
         loop_just_in_time(&context)?;
     } else {
         let frame_data_vec = compress_frames_to_vec(&context);
-        context.stream = Some(Arc::new(TcpStream::connect(&context.config.host).unwrap()));    
+        context.stream = Some(
+            Arc::new(
+                Mutex::new(
+                    TcpStream::connect(&context.config.host).unwrap()
+                )
+            )
+        );  
         println!("Playing video on {}", context.config.host);
         loop_ahead_of_time(&context, frame_data_vec)?;
     }

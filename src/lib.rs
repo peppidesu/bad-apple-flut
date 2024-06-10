@@ -24,7 +24,7 @@ use std::{thread::{self, JoinHandle}, sync::Arc};
 
 #[derive(Debug)]
 pub enum Error {
-    Io(std::io::Error),
+    Io(std::io::Error),    
     FileParseError(String),
     FFmpegError(String),
     InvalidArgs(String),
