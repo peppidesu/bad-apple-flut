@@ -18,7 +18,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
     );
 
     c.bench_function("pixel_to_string", |b| b.iter(|| {
-        px.to_pixelflut_string(400, 0);
+        px.to_pixelflut_cmd(400, 0);
     }));
 }
 

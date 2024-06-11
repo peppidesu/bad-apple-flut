@@ -1,4 +1,4 @@
-use std::io::{BufWriter, Write};
+use std::io::Write;
 use std::net::TcpStream;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -120,7 +120,7 @@ fn send_frame(context: &Context, frame_data: &FrameData) {
     if len != 0 {                
         // send pixels
         let msgs = pixels.par_chunks(400)
-            .map(|chunk| pixels_to_string(
+            .map(|chunk| pixels_to_cmds(
                 chunk, 
                 context.args.x_offset, 
                 context.args.y_offset
@@ -133,7 +133,7 @@ fn send_frame(context: &Context, frame_data: &FrameData) {
                 let stream = Arc::clone(&context.stream.as_ref().expect("Stream not initialized"));               
                 s.spawn(move |_| {                  
                     let mut stream = stream.lock().unwrap();
-                    stream.write_all(msg.as_bytes()).unwrap();                     
+                    stream.write_all(&msg).unwrap();                     
                     stream.flush().unwrap();
                 });
             }

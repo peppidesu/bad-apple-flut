@@ -108,7 +108,7 @@ pub async fn extract_video_frames(input: &str, fps: f64, width: i32, height: i32
     }
     println!("\nDone.");
 
-    let status = cmd.wait().await
+    let _ = cmd.wait().await
         .map_err(|e| Error::FFmpegError(
             format!("failed to execute ffmpeg: {e}")
         ))?;
