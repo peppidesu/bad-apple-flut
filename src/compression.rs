@@ -1,3 +1,6 @@
+use std::sync::{Arc, Mutex};
+
+use priority_queue::PriorityQueue;
 use rayon::prelude::*;
 
 use crate::{
@@ -21,7 +24,7 @@ impl DeltaCompressorV1 {
         Self { last_frame: None, level: level, debug }
     }
 
-    pub fn delta(&self, old: &Frame, new: &Frame) -> FrameData {                
+    fn delta(&self, old: &Frame, new: &Frame) -> FrameData {                
         let px_vec: Vec<_> = old.data().into_par_iter()
             .zip(new.data().into_par_iter())
             .enumerate()
@@ -51,8 +54,10 @@ impl DeltaCompressorV1 {
             FrameData::Delta(px_vec)
         }
     }
+}
 
-    pub fn compress_frame(&mut self, new_frame: &Frame) -> FrameData {        
+impl VideoCompressor for DeltaCompressorV1 {
+    fn compress_frame(&mut self, new_frame: &Frame) -> FrameData {        
         let frame_data = match &self.last_frame {
             Some(lf) => {
                 let data = self.delta(&lf, &new_frame);                
@@ -124,3 +129,114 @@ impl From<CompressionLevelArg> for CompressionLevelV1 {
     }
 }
 
+
+pub struct DeltaCompressorV2 {
+    last_frame: Option<Frame>,
+    level: CompressionLevelV2,
+    debug: bool,
+}
+
+impl DeltaCompressorV2 {
+    pub fn new(level: CompressionLevelV2, debug: bool) -> Self {
+        Self { last_frame: None, level: level, debug }
+    }
+
+    fn delta(&self, old: &Frame, new: &Frame) -> FrameData {
+        let px_queue: PriorityQueue<Pixel, usize> = PriorityQueue::new();
+        let px_queue = Arc::new(Mutex::new(px_queue));
+
+        let mut priorities = old.data().into_par_iter()
+            .zip(new.data().into_par_iter())
+            .enumerate()
+            .map(|(i, (old_val, new_val))| {    
+                let x = i % old.width();
+                let y = i / old.width();
+
+                // temporal chroma subsampling
+                let (old_y, old_u, old_v) = old_val.to_yuv();
+                let (new_y, new_u, new_v) = new_val.to_yuv();
+                
+                // euclidean distance
+                let diff = (old_y as i32 - new_y as i32).pow(2) as usize
+                         + (old_u as i32 - new_u as i32).pow(2) as usize
+                         + (old_v as i32 - new_v as i32).pow(2) as usize;
+                
+                (diff, Pixel { x, y, color: *new_val })
+            })
+            .collect::<Vec<_>>();
+            
+        priorities.sort_by(|a, b| b.0.cmp(&a.0));
+
+        let data: Vec<_> = priorities.into_iter()
+            .take(self.level.target_pixels_per_frame)
+            .map(|(_, px)| px)
+            .collect();
+
+
+        // let mut queue = px_queue.lock().unwrap();
+        // let data: Vec<_> = (0..self.level.target_pixels_per_frame)
+        //     .into_iter()
+        //     .flat_map(|_| queue.pop())
+        //     .map(|(px, _)| px)
+        //     .collect();
+
+        if data.len() == 0 {
+            FrameData::Empty
+        } else {
+            FrameData::Delta(data)
+        }
+    }
+
+}
+
+impl VideoCompressor for DeltaCompressorV2 {
+    
+    fn compress_frame(&mut self, new_frame: &Frame) -> FrameData {
+        let frame_data = match &self.last_frame {
+            Some(lf) => {
+                let data = self.delta(&lf, &new_frame);                
+
+                self.last_frame = Some(lf.apply_frame_data(&data));
+
+                if self.debug {
+                    let debug_frame = Frame::debug(new_frame.width(), new_frame.height());
+                    let debug_frame = debug_frame.apply_frame_data(&data);
+                    debug_frame.to_full_frame_data()
+                }
+                else {
+                    data
+                }
+            },
+            None => {
+                let data = new_frame.to_full_frame_data();
+                self.last_frame = Some(new_frame.clone());
+                data
+            }
+        };
+        frame_data
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////
+
+pub struct CompressionLevelV2 {
+    target_pixels_per_frame: usize
+}
+
+impl CompressionLevelV2 {
+    pub fn new(target_pixels_per_frame: usize) -> Self {
+        Self { target_pixels_per_frame }
+    }
+}
+
+impl From<CompressionLevelArg> for CompressionLevelV2 {
+    fn from(arg: CompressionLevelArg) -> Self {
+        match arg {
+            CompressionLevelArg::None => Self::new(0),
+            CompressionLevelArg::Low => Self::new(960000),
+            CompressionLevelArg::Medium => Self::new(240000),
+            CompressionLevelArg::High => Self::new(60000),
+            CompressionLevelArg::TrashCompactor => Self::new(10000),
+        }
+    }
+}

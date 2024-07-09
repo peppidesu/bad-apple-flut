@@ -88,7 +88,7 @@ fn compress_frames_to_vec(context: &Context) -> Vec<FrameData> {
             let frame_data_vec = Arc::clone(&frame_data_vec);
             s.spawn(move |_| {
                 let mut thread_frame_data_vec = Box::new(Vec::new());
-                let mut compressor = DeltaCompressorV1::new(
+                let mut compressor = DeltaCompressorV2::new(
                     context.args.compression.into(), 
                     context.args.debug
                 );

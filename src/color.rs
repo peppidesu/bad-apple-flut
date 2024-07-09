@@ -1,5 +1,5 @@
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
 pub struct Color { pub r: u8, pub g: u8, pub b: u8 }
 
 impl Color {

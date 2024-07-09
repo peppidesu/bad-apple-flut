@@ -111,6 +111,7 @@ dependencies = [
  "crossterm",
  "dirs",
  "image",
+ "priority-queue",
  "rand",
  "rayon",
  "serde",
@@ -791,6 +792,17 @@ name = "ppv-lite86"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5b40af805b3121feab8a3c29f04d8ad262fa8e0561883e7653e024ae4479e6de"
+
+[[package]]
+name = "priority-queue"
+version = "2.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "70c501afe3a2e25c9bd219aa56ec1e04cdb3fcdd763055be268778c13fa82c1f"
+dependencies = [
+ "autocfg",
+ "equivalent",
+ "indexmap",
+]
 
 [[package]]
 name = "proc-macro2"
