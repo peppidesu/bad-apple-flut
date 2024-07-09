@@ -142,9 +142,6 @@ impl DeltaCompressorV2 {
     }
 
     fn delta(&self, old: &Frame, new: &Frame) -> FrameData {
-        let px_queue: PriorityQueue<Pixel, usize> = PriorityQueue::new();
-        let px_queue = Arc::new(Mutex::new(px_queue));
-
         let mut priorities = old.data().into_par_iter()
             .zip(new.data().into_par_iter())
             .enumerate()
