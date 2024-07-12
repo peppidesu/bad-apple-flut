@@ -106,6 +106,7 @@ name = "bad-apple-flut"
 version = "1.0.0-alpha.1"
 dependencies = [
  "bincode",
+ "bitonic",
  "clap",
  "criterion",
  "crossterm",
@@ -113,7 +114,7 @@ dependencies = [
  "image",
  "priority-queue",
  "rand",
- "rayon",
+ "rayon 1.8.0",
  "serde",
  "tempfile",
  "test-case",
@@ -147,6 +148,15 @@ name = "bitflags"
 version = "2.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "327762f6e5a765692301e5bb513e0d9fef63be86bbc14528052b1cd3e6f03e07"
+
+[[package]]
+name = "bitonic"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2570e23612e1de1c3429a5716021f33944c3fca72f22b60752dab7f9f00c2bb6"
+dependencies = [
+ "rayon 0.8.2",
+]
 
 [[package]]
 name = "bumpalo"
@@ -298,7 +308,7 @@ dependencies = [
  "once_cell",
  "oorandom",
  "plotters",
- "rayon",
+ "rayon 1.8.0",
  "regex",
  "serde",
  "serde_derive",
@@ -586,7 +596,7 @@ version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f5d4a7da358eff58addd2877a45865158f0d78c911d43a5784ceb7bbf52833b0"
 dependencies = [
- "rayon",
+ "rayon 1.8.0",
 ]
 
 [[package]]
@@ -859,6 +869,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c"
 dependencies = [
  "getrandom",
+]
+
+[[package]]
+name = "rayon"
+version = "0.8.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b614fe08b6665cb9a231d07ac1364b0ef3cb3698f1239ee0c4c3a88a524f54c8"
+dependencies = [
+ "rayon-core",
 ]
 
 [[package]]

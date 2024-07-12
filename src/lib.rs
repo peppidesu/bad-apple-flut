@@ -1,3 +1,4 @@
+#![feature(io_error_more)]
 
 mod ffmpeg_cli;
 mod cache;
@@ -7,7 +8,7 @@ mod frame;
 mod color;
 mod pixel;
 mod config;
-
+mod protocol;
 
 pub use ffmpeg_cli::*;
 pub use cache::*;
@@ -17,10 +18,11 @@ pub use frame::*;
 pub use color::*;
 pub use pixel::*;
 pub use config::*;
+pub use protocol::*;
 
 pub mod paths;
 
-use std::{thread::{self, JoinHandle}, sync::Arc};
+use std::{fmt::Display, sync::Arc, thread::{self, JoinHandle}};
 
 #[derive(Debug)]
 pub enum Error {
@@ -29,12 +31,27 @@ pub enum Error {
     FFmpegError(String),
     InvalidArgs(String),
     InvalidConfig(String),
+    Custom(String),
 }
 
 pub type Result<T> = core::result::Result<T, Error>;
 
 impl From<std::io::Error> for Error {
     fn from(e: std::io::Error) -> Self { Self::Io(e) }
+}
+
+impl Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::Io(e) => write!(f, "IO error: {}", e),
+            Error::FileParseError(e) => write!(f, "File parse error: {}", e),
+            Error::FFmpegError(e) => write!(f, "FFmpeg error: {}", e),
+            Error::InvalidArgs(e) => write!(f, "Invalid arguments: {}", e),
+            Error::InvalidConfig(e) => write!(f, "Invalid config: {}", e),
+            Error::Custom(e) => write!(f, "{}", e),
+        }
+    }
+
 }
 
 

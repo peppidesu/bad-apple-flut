@@ -30,8 +30,8 @@ pub struct Args {
     pub fps: Option<f64>,
     
     /// Compression level
-    #[clap(long, default_value = "medium")]
-    pub compression: CompressionLevelArg,
+    #[clap(long)]
+    pub compression: String,
     
     /// Ignore frame cache
     #[clap(long)]
@@ -62,11 +62,32 @@ impl From<Args> for CacheKey {
     }
 }
 
-#[derive(Clone, Copy, ValueEnum)]
-pub enum CompressionLevelArg {    
+#[derive(Clone, Copy, Debug)]
+pub enum CompressionLevelArg {
     None,
     Low,
     Medium,
     High,    
-    TrashCompactor
+    TrashCompactor,
+    Number(usize)
+}
+
+impl TryFrom<String> for CompressionLevelArg {
+    type Error = &'static str;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        match value.to_lowercase().as_str() {
+            "none" => Ok(Self::None),
+            "low" => Ok(Self::Low),
+            "medium" => Ok(Self::Medium),
+            "high" => Ok(Self::High),
+            "trash-compactor" => Ok(Self::TrashCompactor),
+            _ => {
+                match value.parse::<usize>() {
+                    Ok(n) => Ok(Self::Number(n)),
+                    Err(_) => Err("Invalid compression level")
+                }
+            }
+        }
+    }
 }
