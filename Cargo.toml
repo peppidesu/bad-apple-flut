@@ -30,6 +30,13 @@ test-case = "3.3.1"
 criterion = "0.5.1"
 rand = "0.8.5"
 
-[profile.release]
+[profile.prod]
+inherits = "release"
 codegen-units = 1
 lto = "thin"
+strip="symbols"
+
+[profile.prod.build-override]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

@@ -35,20 +35,20 @@ pub struct Args {
     #[clap(long)]
     pub compression: String,
     
-    /// Ignore frame cache
-    #[clap(long)]
-    pub nocache: bool,
-
-    /// Compress frames just-in-time
-    #[clap(long)]
-    pub jit: bool,
-
-    #[clap(long)]
-    pub debug: bool,
-
     /// Target canvas (if supported)
     #[clap(long, default_value = "0")]
     pub canvas: u8,
+    
+    /// Ignore frame cache
+    #[clap(long, action=clap::ArgAction::SetTrue)]
+    pub nocache: bool,
+
+    /// Compress frames just-in-time
+    #[clap(long, action=clap::ArgAction::SetTrue)]
+    pub jit: bool,
+
+    #[clap(long, action=clap::ArgAction::SetTrue)]
+    pub debug: bool,
 }
 
 impl From<Args> for CacheKey {
