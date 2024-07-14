@@ -13,8 +13,7 @@ use bad_apple_flut::*;
 use colored::Colorize;
 
 struct Context {
-    args: Args,
-    config: Config,
+    args: Args,    
     stream: Option<Arc<Mutex<TcpStream>>>,
     metadata: VideoMetadata,
     thread_pool: ThreadPool,
@@ -85,10 +84,10 @@ fn compress_frames_to_vec(
         .map(|i| FrameFile::new(i))
         .collect::<Vec<_>>();
 
-    let chunks = frame_files.chunks(context.config.aot_frame_group_size);
+    let chunks = frame_files.chunks(context.args.aot_frame_group_size);
 
     let thread_pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(context.config.compress_threads)
+        .num_threads(context.args.compress_threads)
         .build()
         .expect("Failed to create thread pool");
 
@@ -162,7 +161,7 @@ fn send_frame(context: &Context, frame_data: &FrameData) -> Result<()> {
             .par_chunks(400)
             .map(|chunk| {
                 pixels_to_cmds(
-                    context.config.protocol,
+                    context.args.protocol,
                     context.args.canvas,
                     chunk,
                     context.args.x_offset,
@@ -276,28 +275,27 @@ pub fn verify_args(args: &Args) -> Result<()> {
             path.to_str().unwrap()
         )));
     }
-
-    Ok(())
-}
-pub fn verify_config(config: &Config) -> Result<()> {
-    if config.send_threads == 0 {
+    if args.send_threads == 0 {
         return Err(Error::InvalidConfig(
             "send_threads must be greater than 0".to_string(),
         ));
     }
-    if config.compress_threads == 0 {
+    if args.compress_threads == 0 {
         return Err(Error::InvalidConfig(
             "compress_threads must be greater than 0".to_string(),
         ));
     }
-    if config.host.is_empty() {
-        return Err(Error::InvalidConfig("host must not be empty".to_string()));
-    }
-    if config.aot_frame_group_size == 0 {
+    if args.host.is_none() && args.target.is_none() {
+        return Err(Error::InvalidConfig(
+            "host or target must be specified".to_string(),
+        ));
+    }    
+    if args.aot_frame_group_size == 0 {
         return Err(Error::InvalidConfig(
             "aot_frame_group_size must be greater than 0".to_string(),
         ));
     }
+
     Ok(())
 }
 
@@ -312,17 +310,28 @@ async fn main() -> Result<()> {
             );
             eprintln!(
                 "If you recently updated bad-apple-flut, you may need to add missing fields to the config file. See the latest README for details."
-            );
+            );            
             std::process::exit(1);
         }
     );
 
-    let args = config.args.clone().merge_clap();
+    let mut args = config.args.clone().merge_clap();
 
     verify_args(&args)?;
-    verify_config(&config).unwrap_or_else(|e| {
-        eprintln!("Invalid config: {:?}", e.to_string());
-    });
+
+    match &args.target {
+        Some(target) => {
+            let target = config.targets.get(target).unwrap_or_else(|| {
+                eprintln!("Target '{}' not found in config", target);
+                std::process::exit(1);
+            });            
+
+            args.host = Some(target.host.clone());
+            args.protocol = target.protocol.clone();
+            args.canvas = target.canvas;
+        }
+        None => {}
+    }
 
     let cache_key = args.clone().into();
 
@@ -346,20 +355,19 @@ async fn main() -> Result<()> {
     let metadata = VideoMetadata::load()?;
 
     let thread_pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(config.send_threads)
+        .num_threads(args.send_threads)
         .build()
         .unwrap();
 
     let mut context = Context {
         args,
-        config,
         stream: None,
         metadata,
         thread_pool,
     };
     
     let mut compression_level = 
-        CompressionLevelArg::try_from(context.args.compression.clone())
+        CompressionLevelArg::try_from(context.args.compression_level.clone())
             .map_err(|e| Error::InvalidArgs(e.to_string()))?;
     
     if let CompressionLevelArg::Number(n) = compression_level {
@@ -369,20 +377,22 @@ async fn main() -> Result<()> {
     }
 
     let compressor = VideoCompressor::new(
-        context.config.compression_algorithm.clone(),
+        context.args.compression_algorithm.clone(),
         compression_level,
         context.args.debug
     )?;
 
+    let host = context.args.host.clone().unwrap();
+    
     if context.args.jit {
-        println!("{}", context.config.host);
+        println!("{}", host);
         context.stream = Some(Arc::new(Mutex::new(
-            TcpStream::connect(&context.config.host).unwrap_or_else(|e| {
-                eprintln!("Failed to connect to {}: {}", context.config.host, e);
+            TcpStream::connect(&host).unwrap_or_else(|e| {
+                eprintln!("Failed to connect to {}: {}", host, e);
                 std::process::exit(1);
             }),
         )));
-        println!("{} Playing video on {}", "::".blue(), context.config.host);
+        println!("{} Playing video on {}", "::".blue(), host);
         loop_just_in_time(&context, compressor)?;
     } else {
         let frame_data_vec = compress_frames_to_vec(&context, compressor).unwrap_or_else(|e| {
@@ -391,12 +401,14 @@ async fn main() -> Result<()> {
         });
 
         context.stream = Some(Arc::new(Mutex::new(
-            TcpStream::connect(&context.config.host).unwrap_or_else(|e| {
-                eprintln!("Failed to connect to {}: {}", context.config.host, e);
+            TcpStream::connect(&host).unwrap_or_else(|e| {
+                eprintln!("Failed to connect to {}: {}", host, e);
                 std::process::exit(1);
             }),
         )));
-        println!("{} Playing video on {}", "::".blue(), context.config.host);
+
+        println!("{} Playing video on {}", "::".blue(), host);
+
         loop_ahead_of_time(&context, frame_data_vec)?;
     }
 

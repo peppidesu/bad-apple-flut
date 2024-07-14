@@ -1,32 +1,23 @@
+use std::collections::HashMap;
+
 use crate::*;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Config {
-    pub host: String,
-    pub send_threads: usize,
-    pub compress_threads: usize,
-    pub aot_frame_group_size: usize,
-    #[serde(default)]
-    pub compression_algorithm: CompressionAlgConfig,
-    #[serde(default)]
-    pub protocol: Protocol,
+pub struct Config {    
     #[serde(default)]
     pub args: Args,
+    #[serde(default)]
+    #[serde(skip_serializing)]
+    pub targets: HashMap<String, Target>
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            host: "localhost:1234".to_string(),
-            send_threads: 8,
-            compress_threads: 8,
-            aot_frame_group_size: 100,
-            compression_algorithm: CompressionAlgConfig::default(),
-            protocol: Protocol::default(),
-            args: Args::default(),
-        }
-    }
+#[derive(Hash, Clone, Debug, Serialize, Deserialize)]
+pub struct Target {
+    pub host: String,
+    pub protocol: Protocol,
+    #[serde(default)]
+    pub canvas: u8,
 }
 
 impl Config {
@@ -64,5 +55,14 @@ impl Config {
             },
         };
         Ok(toml::from_str(&config).map_err(|e| Error::FileParseError(e.to_string()))?)
+    }
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            args: Args::config_default(),
+            targets: HashMap::new(),
+        }
     }
 }

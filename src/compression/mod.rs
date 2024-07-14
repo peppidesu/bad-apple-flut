@@ -6,6 +6,8 @@ mod v2;
 use v1::VideoCompressorV1;
 use v2::VideoCompressorV2;
 
+use clap::ValueEnum;
+
 use crate::{
     args::CompressionLevelArg, frame::{Frame,FrameData}, Result
 };
@@ -17,7 +19,7 @@ macro_rules! impl_video_compressor {
             $($name($t)),*
         }
 
-        #[derive(Debug, Clone, Serialize, Deserialize)]
+        #[derive(Debug, Clone, Serialize, Deserialize, ValueEnum)]
         #[serde(rename_all = "kebab-case")]
         pub enum CompressionAlgConfig {
             $($name),*

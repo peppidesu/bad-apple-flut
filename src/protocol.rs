@@ -1,10 +1,11 @@
 use std::io::Write as _;
 
+use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
 use crate::Pixel;
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, ValueEnum, Hash)]
 #[serde(rename_all = "kebab-case")]
 pub enum Protocol {
     Plaintext,
