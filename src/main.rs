@@ -1,13 +1,16 @@
 #![feature(sync_unsafe_cell)]
+#![feature(ptr_as_ref_unchecked)]
+use clap_serde_derive::ClapSerde;
+use rayon::{prelude::*, ThreadPool};
 use std::cell::SyncUnsafeCell;
 use std::io::Write;
 use std::net::TcpStream;
 use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use rayon::{prelude::*, ThreadPool};
 
 use bad_apple_flut::*;
+use colored::Colorize;
 
 struct Context {
     args: Args,
@@ -40,139 +43,169 @@ impl FrameTimer {
 
         self.duration = self.delay.saturating_sub(self.lag);
         let duration = self.duration; // required bc of move into thread
-        self.handle = Some(thread::spawn(move || {                
+        self.handle = Some(thread::spawn(move || {
             thread::sleep(std::time::Duration::from_millis(duration));
         }));
         self.lag = self.lag.saturating_sub(self.delay);
     }
     pub fn wait(&mut self) {
-        self.handle.take()
+        self.handle
+            .take()
             .expect("wait() called before start()")
-            .join().unwrap();
+            .join()
+            .unwrap();
 
         let end_time = std::time::Instant::now();
         let elapsed = end_time.duration_since(self.start).as_millis() as u64;
-        self.lag += elapsed.saturating_sub(self.duration);            
+        self.lag += elapsed.saturating_sub(self.duration);
     }
 }
 
+fn compress_frames_to_vec(
+    context: &Context,
+    compressor: VideoCompressor,
+) -> Result<Vec<FrameData>> {
+    println!("{} {}", "::".blue(), "Compressing frames ...");
 
-fn compress_frames_to_vec(context: &Context, compressor: VideoCompressor) -> Vec<FrameData> {
-    
-    println!("Compressing frames ...");
-            
-    let frame_data_vec = Arc::new(
-        SyncUnsafeCell::new(
-            vec![FrameData::Empty; context.metadata.frame_count]
-        )
-    );
+    let frame_data_vec = Arc::new(SyncUnsafeCell::new(vec![
+        FrameData::Empty;
+        context.metadata.frame_count
+    ]));    
 
     let counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
     let progress = progress_tracker(
-        counter.clone(), 
-        context.metadata.frame_count, 
-        "frames compressed".to_string()
+        counter.clone(),
+        context.metadata.frame_count,
+        "frames compressed".to_string(),
     );
 
     let frame_files = (1..=context.metadata.frame_count)
         .into_par_iter()
-        .map(|i| FrameFile::new(i))       
+        .map(|i| FrameFile::new(i))
         .collect::<Vec<_>>();
 
-    
-    let chunks = frame_files.chunks(500);
+    let chunks = frame_files.chunks(context.config.aot_frame_group_size);
 
     let thread_pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(context.config.thread_count)
+        .num_threads(context.config.compress_threads)
         .build()
-        .unwrap();    
+        .expect("Failed to create thread pool");
 
-    let compressors = Arc::new(
-        SyncUnsafeCell::new(
-            vec![compressor.clone(); chunks.len()]
-        )
-    );
+    let compressors = Arc::new(SyncUnsafeCell::new(vec![compressor.clone(); chunks.len()]));
 
     thread_pool.scope(|s| {
+        let (err_tx, err_rx) = channel::<String>();
+        let err_tx = Arc::new(Mutex::new(err_tx));
+        let err_rx = Arc::new(Mutex::new(err_rx));
+
         for (i, chunk) in chunks.enumerate() {
             let counter = Arc::clone(&counter);
             let compressors = Arc::clone(&compressors);
             let frame_data_vec = Arc::clone(&frame_data_vec);
+            let err_tx = Arc::clone(&err_tx);
+            let err_rx = Arc::clone(&err_rx);
+
+            if let Ok(e) = err_rx.lock().unwrap().try_recv() {
+                return Err(Error::Custom(e));
+            }
+
             s.spawn(move |_| {
                 let mut thread_frame_data_vec = Box::new(Vec::new());
-                let compressor = unsafe { &mut compressors.get().as_mut().unwrap()[i] };
+                let compressor = unsafe { &mut compressors.get().as_mut_unchecked()[i] };
 
                 for frame_file in chunk {
-                    let frame_data = compressor.compress_frame(&frame_file.load().unwrap());
+                    if let Ok(_) = err_rx.lock().unwrap().try_recv() {
+                        return;
+                    }
+
+                    let frame = frame_file.load();
+
+                    if let Err(e) = frame {
+                        err_tx
+                            .lock()
+                            .unwrap()
+                            .send(format!("Failed to load frame {}: {}", frame_file.idx(), e))
+                            .unwrap_or_else(|_| {});
+                        return;
+                    }
+
+                    let frame_data = compressor.compress_frame(&frame.unwrap());
                     thread_frame_data_vec.push(frame_data);
                     counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
 
-                let frame_data_vec = unsafe { frame_data_vec.get().as_mut().unwrap() };
+                let frame_data_vec = unsafe { frame_data_vec.get().as_mut_unchecked() };
                 frame_data_vec.splice(
-                    chunk[0].idx()-1..chunk[0].idx()-1+thread_frame_data_vec.len(), 
-                    thread_frame_data_vec.into_iter()
+                    chunk[0].idx() - 1..chunk[0].idx() - 1 + thread_frame_data_vec.len(),
+                    thread_frame_data_vec.into_iter(),
                 );
             });
         }
-    });
+
+        Ok(())
+    })?;
 
     progress.join().unwrap();
-    
-    Arc::try_unwrap(frame_data_vec)
+
+    Ok(Arc::try_unwrap(frame_data_vec)
         .expect("More than 1 strong reference (impossible)")
-        .into_inner()   
+        .into_inner())
 }
 
 fn send_frame(context: &Context, frame_data: &FrameData) -> Result<()> {
     let pixels = frame_data.to_owned().to_pixels();
     let len = pixels.len();
-    if len != 0 {                
+    if len != 0 {
         // send pixels
-        let msgs = pixels.par_chunks(200)
-            .map(|chunk| pixels_to_cmds(
-                context.config.protocol,
-                chunk, 
-                context.args.x_offset, 
-                context.args.y_offset
-            ))
-            .collect::<Vec<_>>();        
+        let msgs = pixels
+            .par_chunks(400)
+            .map(|chunk| {
+                pixels_to_cmds(
+                    context.config.protocol,
+                    context.args.canvas,
+                    chunk,
+                    context.args.x_offset,
+                    context.args.y_offset,
+                )
+            })
+            .collect::<Vec<_>>();
 
         context.thread_pool.scope(|s| {
             let (err_tx, err_rx) = channel::<String>();
             let err_tx = Arc::new(Mutex::new(err_tx));
-            
+
             for msg in msgs {
-                if let Ok(e) = err_rx.try_recv() {                        
+                if let Ok(e) = err_rx.try_recv() {
                     return Err(Error::Custom(e));
                 }
 
-                let stream = Arc::clone(&context.stream.as_ref().expect("Stream not initialized"));               
+                let stream = Arc::clone(&context.stream.as_ref().expect("Stream not initialized"));
                 let err_tx = Arc::clone(&err_tx);
-                s.spawn(move |_| {                                      
+                s.spawn(move |_| {
                     let result = match &mut stream.lock() {
                         Ok(stream) => {
                             let success = stream.write_all(&msg);
                             match success {
                                 Ok(_) => {
                                     stream.flush().unwrap();
-                                    Ok(())                                    
+                                    Ok(())
                                 }
                                 Err(e) => match e.kind() {
                                     std::io::ErrorKind::BrokenPipe => {
-                                        Err("Unable to send frame: Connection closed by server".to_string())
+                                        Err("Unable to send frame: Connection closed by server"
+                                            .to_string())
                                     }
-                                    _ => Err("Unable to send frame: Unknown error".to_string())
-                                }
-                            }                    
+                                    _ => Err("Unable to send frame: Unknown error".to_string()),
+                                },
+                            }
                         }
-                        Err(_) => Err("Failed to lock stream".to_string())
+                        Err(_) => Err("Failed to lock stream".to_string()),
                     };
 
                     if let Err(e) = result {
                         err_tx.lock().unwrap().send(e).unwrap_or_else(|_| {
-                            // error probably already sent, rx out of scope                            
+                            // error probably already sent, rx out of scope
                         });
                     }
                 });
@@ -182,16 +215,16 @@ fn send_frame(context: &Context, frame_data: &FrameData) -> Result<()> {
         })
     } else {
         Ok(())
-    }    
+    }
 }
 
 fn loop_just_in_time(context: &Context, mut compressor: VideoCompressor) -> Result<()> {
     let mut timer = FrameTimer::new(context.metadata.fps);
     loop {
         for i in 1..=context.metadata.frame_count {
-            timer.start();            
-            let frame = FrameFile::new(i).load()?;           
-            let frame_data = compressor.compress_frame(&frame);            
+            timer.start();
+            let frame = FrameFile::new(i).load()?;
+            let frame_data = compressor.compress_frame(&frame);
             send_frame(&context, &frame_data).unwrap_or_else(|e| {
                 eprintln!("{}", e);
                 std::process::exit(1);
@@ -208,6 +241,7 @@ fn loop_ahead_of_time(context: &Context, frames: Vec<FrameData>) -> Result<()> {
             timer.start();
             send_frame(&context, &frame_data).unwrap_or_else(|e| {
                 eprintln!("Error: {:?}", e);
+                std::process::exit(1);
             });
             timer.wait();
         }
@@ -216,88 +250,106 @@ fn loop_ahead_of_time(context: &Context, frames: Vec<FrameData>) -> Result<()> {
 
 pub fn verify_args(args: &Args) -> Result<()> {
     if args.width.is_some() && args.width.unwrap() < 0 {
-        return Err(Error::InvalidArgs(
-            "--width must be positive".to_string()
-        ));
+        return Err(Error::InvalidArgs("--width must be positive".to_string()));
     }
     if args.height.is_some() && args.height.unwrap() < 0 {
-        return Err(Error::InvalidArgs(
-            "--height must be positive".to_string()
-        ));
+        return Err(Error::InvalidArgs("--height must be positive".to_string()));
     }
     if args.fps.is_some() && args.fps.unwrap() <= 0.0 {
         return Err(Error::InvalidArgs(
-            "--fps must be greater than 0.0".to_string()
+            "--fps must be greater than 0.0".to_string(),
         ));
     }
     if args.input.is_empty() {
-        return Err(Error::InvalidArgs(
-            "No input file specified".to_string()
-        ));
+        return Err(Error::InvalidArgs("No input file specified".to_string()));
     }
     let path = std::path::Path::new(&args.input);
     if !path.exists() {
-        return Err(Error::InvalidArgs(
-            format!("Input file '{}' does not exist", path.to_str().unwrap())
-        ));
+        return Err(Error::InvalidArgs(format!(
+            "Input file '{}' does not exist",
+            path.to_str().unwrap()
+        )));
     }
     if !path.is_file() {
-        return Err(Error::InvalidArgs(
-            format!("Input file '{}' is not a file", path.to_str().unwrap())
-        ));
+        return Err(Error::InvalidArgs(format!(
+            "Input file '{}' is not a file",
+            path.to_str().unwrap()
+        )));
     }
-    
+
     Ok(())
 }
 pub fn verify_config(config: &Config) -> Result<()> {
-    if config.thread_count == 0 {
+    if config.send_threads == 0 {
         return Err(Error::InvalidConfig(
-            "Thread count must be greater than 0".to_string()
+            "send_threads must be greater than 0".to_string(),
+        ));
+    }
+    if config.compress_threads == 0 {
+        return Err(Error::InvalidConfig(
+            "compress_threads must be greater than 0".to_string(),
         ));
     }
     if config.host.is_empty() {
+        return Err(Error::InvalidConfig("host must not be empty".to_string()));
+    }
+    if config.aot_frame_group_size == 0 {
         return Err(Error::InvalidConfig(
-            "Host must not be empty".to_string()
+            "aot_frame_group_size must be greater than 0".to_string(),
         ));
     }
     Ok(())
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {   
-    let args = Args::parse();
-    let config = Config::load()?;
+async fn main() -> Result<()> {    
+    let config = Config::load().unwrap_or_else(
+        |e| {
+            eprintln!("Failed to load config:\n{}", e.to_string().red());
+            eprintln!(
+                "Edit the config file at [{}] to fix the problem.", 
+                paths::config_file().to_str().unwrap().cyan()
+            );
+            eprintln!(
+                "If you recently updated bad-apple-flut, you may need to add missing fields to the config file. See the latest README for details."
+            );
+            std::process::exit(1);
+        }
+    );
+
+    let args = config.args.clone().merge_clap();
 
     verify_args(&args)?;
     verify_config(&config).unwrap_or_else(|e| {
-        eprintln!("Invalid config: {:?}", e);
-    });        
+        eprintln!("Invalid config: {:?}", e.to_string());
+    });
 
     let cache_key = args.clone().into();
 
     if !is_cache_valid(&cache_key).unwrap_or(false) || args.nocache {
-        clean_cache()?;       
-        
+        clean_cache()?;
+
         let metadata = extract_video_frames(
             &args.input,
-            args.fps.unwrap_or(
-                get_video_framerate(&args.input).await?
-            ),
+            args.fps.unwrap_or(get_video_framerate(&args.input).await?),
             args.width.unwrap_or(-1),
-            args.height.unwrap_or(-1)
-        ).await?;
-        
+            args.height.unwrap_or(-1),
+        )
+        .await?;
+
         metadata.write()?;
 
-        write_cache_id(&cache_key)?;     
-    }    
+        write_cache_id(&cache_key)?;
+    }
+    
+
     let metadata = VideoMetadata::load()?;
 
     let thread_pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(config.thread_count)
+        .num_threads(config.send_threads)
         .build()
         .unwrap();
-    
+
     let mut context = Context {
         args,
         config,
@@ -305,35 +357,46 @@ async fn main() -> Result<()> {
         metadata,
         thread_pool,
     };
+    
+    let mut compression_level = 
+        CompressionLevelArg::try_from(context.args.compression.clone())
+            .map_err(|e| Error::InvalidArgs(e.to_string()))?;
+    
+    if let CompressionLevelArg::Number(n) = compression_level {
+        compression_level = CompressionLevelArg::Number(
+            ((n * 1024) as f64 / context.metadata.fps) as usize
+        ); 
+    }
 
     let compressor = VideoCompressor::new(
         context.config.compression_algorithm.clone(),
-        CompressionLevelArg::try_from(context.args.compression.clone())
-            .map_err(|e| Error::InvalidArgs(e.to_string()))?,
+        compression_level,
         context.args.debug
     )?;
 
-    if context.args.jit {        
+    if context.args.jit {
         println!("{}", context.config.host);
-        context.stream = Some(
-            Arc::new(
-                Mutex::new(
-                    TcpStream::connect(&context.config.host).unwrap()
-                )
-            )
-        );                           
-        println!("Playing video on {}", context.config.host);
+        context.stream = Some(Arc::new(Mutex::new(
+            TcpStream::connect(&context.config.host).unwrap_or_else(|e| {
+                eprintln!("Failed to connect to {}: {}", context.config.host, e);
+                std::process::exit(1);
+            }),
+        )));
+        println!("{} Playing video on {}", "::".blue(), context.config.host);
         loop_just_in_time(&context, compressor)?;
     } else {
-        let frame_data_vec = compress_frames_to_vec(&context, compressor);        
-        context.stream = Some(
-            Arc::new(
-                Mutex::new(
-                    TcpStream::connect(&context.config.host).unwrap()
-                )
-            )
-        );  
-        println!("Playing video on {}", context.config.host);
+        let frame_data_vec = compress_frames_to_vec(&context, compressor).unwrap_or_else(|e| {
+            eprintln!("Error: {:?}", e);
+            std::process::exit(1);
+        });
+
+        context.stream = Some(Arc::new(Mutex::new(
+            TcpStream::connect(&context.config.host).unwrap_or_else(|e| {
+                eprintln!("Failed to connect to {}: {}", context.config.host, e);
+                std::process::exit(1);
+            }),
+        )));
+        println!("{} Playing video on {}", "::".blue(), context.config.host);
         loop_ahead_of_time(&context, frame_data_vec)?;
     }
 

@@ -1,12 +1,14 @@
-use clap::{Parser, ValueEnum};
+use clap_serde_derive::ClapSerde;
+use serde::{Deserialize, Serialize};
 
 use crate::cache::CacheKey;
 
-#[derive(Parser, Clone)]
+#[derive(ClapSerde, Clone, Debug, Serialize, Deserialize)]
 #[command(author, version, about, long_about = None)]
 pub struct Args {
     /// Input file
     #[clap(short, long)]
+    #[serde(skip)]
     pub input: String,
 
     /// Horizontal offset (in px)
@@ -29,7 +31,7 @@ pub struct Args {
     #[clap(long)]
     pub fps: Option<f64>,
     
-    /// Compression level
+    /// Compression level [none|low|medium|high|trash-compactor|number]
     #[clap(long)]
     pub compression: String,
     
@@ -42,13 +44,11 @@ pub struct Args {
     pub jit: bool,
 
     #[clap(long)]
-    pub debug: bool
-}
+    pub debug: bool,
 
-impl Args {
-    pub fn parse() -> Self {
-        Self::parse_from(std::env::args())
-    }
+    /// Target canvas (if supported)
+    #[clap(long, default_value = "0")]
+    pub canvas: u8,
 }
 
 impl From<Args> for CacheKey {

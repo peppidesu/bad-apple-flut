@@ -1,4 +1,5 @@
 use std::process::Stdio;
+use colored::Colorize;
 use tokio::{process::Command, io::{BufReader, AsyncBufReadExt}};
 use crate::{Result, Error, paths, VideoMetadata};
 
@@ -37,7 +38,7 @@ pub async fn get_video_framerate(input: &str) -> Result<f64> {
 }
 
 pub async fn extract_video_frames(input: &str, fps: f64, width: i32, height: i32) -> Result<VideoMetadata> {
-    println!("Extracting frames to {} ...", paths::cache_frames().to_str().unwrap());
+    println!("{} Extracting frames to {} ...", "::".blue(), paths::cache_frames().to_str().unwrap());
     
     if let Err(e) = std::fs::create_dir_all(paths::cache_frames()) {
         match e.kind() {

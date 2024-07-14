@@ -13,7 +13,11 @@ pub struct VideoCompressorV1 {
 
 impl VideoCompressorV1 {
     pub fn new(level: CompressionLevelArg, debug: bool) -> Result<Self> {
-        Ok(Self { last_frame: None, level: level.try_into()?, debug })
+        Ok(Self { 
+            last_frame: None, 
+            level: level.try_into()?,
+            debug 
+        })
     }
     fn delta(&self, old: &Frame, new: &Frame) -> FrameData {                
         let px_vec: Vec<_> = old.data().into_par_iter()

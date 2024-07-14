@@ -1,4 +1,3 @@
-use rayon::prelude::*;
 use serde::{Serialize, Deserialize};
 
 mod v1;
@@ -37,7 +36,6 @@ macro_rules! impl_video_compressor {
                 }
             }
         }
-        
     };   
 }
 

@@ -10,6 +10,7 @@ mod pixel;
 mod config;
 mod protocol;
 
+use colored::Colorize;
 pub use ffmpeg_cli::*;
 pub use cache::*;
 pub use args::*;
@@ -93,11 +94,29 @@ pub fn progress_tracker(counter: Arc<std::sync::atomic::AtomicUsize>, max: usize
                 let mins = ((eta - hrs as f64 * 3600.0) / 60.0) as i32;
                 let secs = (eta - hrs as f64 * 3600.0 - mins as f64 * 60.0) as i32;
                 if hrs > 0 {
-                    print_over_line(format!("{} / {} {} | ETA: {:}h{:02}m{:02}s", count, max, descr, hrs, mins, secs));
+                    print_over_line(format!(
+                        "{} / {} {} | {}", 
+                        count, 
+                        max, 
+                        descr, 
+                        format!("ETA: {:}h{:02}m{:02}s", hrs, mins, secs).cyan()
+                    ));
                 } else if mins > 0 {
-                    print_over_line(format!("{} / {} {} | ETA: {:}m{:02}s", count, max, descr, mins, secs));
+                    print_over_line(format!(
+                        "{} / {} {} | {}", 
+                        count, 
+                        max, 
+                        descr,                         
+                        format!("ETA: {:}m{:02}s", mins, secs).cyan()
+                    ));
                 } else {
-                    print_over_line(format!("{} / {} {} | ETA: {:}s", count, max, descr,  secs));
+                    print_over_line(format!(
+                        "{} / {} {} | {}", 
+                        count, 
+                        max, 
+                        descr, 
+                        format!("ETA: {:}s", secs).cyan()
+                    ));
                 }
             }
     
