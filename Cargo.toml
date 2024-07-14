@@ -33,6 +33,3 @@ rand = "0.8.5"
 [profile.release]
 codegen-units = 1
 lto = "thin"
-
-[build]
-rustflags = ["-C", "target-cpu=native"]
