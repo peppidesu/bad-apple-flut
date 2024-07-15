@@ -25,9 +25,8 @@ pub fn config_file() -> PathBuf {
     config_dir().join("config.toml")
 }
 
-pub fn create_dir_if_not_exists(path: &PathBuf) -> std::io::Result<()> {
+pub fn create_dir_if_not_exists(path: &PathBuf) {
     if !path.exists() {
-        std::fs::create_dir_all(path)?;
-    }
-    Ok(())
+        std::fs::create_dir_all(path).expect("Failed to create config directory");
+    }    
 }

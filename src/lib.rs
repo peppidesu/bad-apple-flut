@@ -1,3 +1,4 @@
+#![feature(io_error_more)]
 
 mod ffmpeg_cli;
 mod cache;
@@ -7,8 +8,9 @@ mod frame;
 mod color;
 mod pixel;
 mod config;
+mod protocol;
 
-
+use colored::Colorize;
 pub use ffmpeg_cli::*;
 pub use cache::*;
 pub use args::*;
@@ -17,10 +19,11 @@ pub use frame::*;
 pub use color::*;
 pub use pixel::*;
 pub use config::*;
+pub use protocol::*;
 
 pub mod paths;
 
-use std::{thread::{self, JoinHandle}, sync::Arc};
+use std::{fmt::Display, sync::Arc, thread::{self, JoinHandle}};
 
 #[derive(Debug)]
 pub enum Error {
@@ -29,12 +32,27 @@ pub enum Error {
     FFmpegError(String),
     InvalidArgs(String),
     InvalidConfig(String),
+    Custom(String),
 }
 
 pub type Result<T> = core::result::Result<T, Error>;
 
 impl From<std::io::Error> for Error {
     fn from(e: std::io::Error) -> Self { Self::Io(e) }
+}
+
+impl Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::Io(e) => write!(f, "IO error: {}", e),
+            Error::FileParseError(e) => write!(f, "File parse error: {}", e),
+            Error::FFmpegError(e) => write!(f, "FFmpeg error: {}", e),
+            Error::InvalidArgs(e) => write!(f, "Invalid arguments: {}", e),
+            Error::InvalidConfig(e) => write!(f, "Invalid config: {}", e),
+            Error::Custom(e) => write!(f, "{}", e),
+        }
+    }
+
 }
 
 
@@ -76,11 +94,29 @@ pub fn progress_tracker(counter: Arc<std::sync::atomic::AtomicUsize>, max: usize
                 let mins = ((eta - hrs as f64 * 3600.0) / 60.0) as i32;
                 let secs = (eta - hrs as f64 * 3600.0 - mins as f64 * 60.0) as i32;
                 if hrs > 0 {
-                    print_over_line(format!("{} / {} {} | ETA: {:}h{:02}m{:02}s", count, max, descr, hrs, mins, secs));
+                    print_over_line(format!(
+                        "{} / {} {} | {}", 
+                        count, 
+                        max, 
+                        descr, 
+                        format!("ETA: {:}h{:02}m{:02}s", hrs, mins, secs).cyan()
+                    ));
                 } else if mins > 0 {
-                    print_over_line(format!("{} / {} {} | ETA: {:}m{:02}s", count, max, descr, mins, secs));
+                    print_over_line(format!(
+                        "{} / {} {} | {}", 
+                        count, 
+                        max, 
+                        descr,                         
+                        format!("ETA: {:}m{:02}s", mins, secs).cyan()
+                    ));
                 } else {
-                    print_over_line(format!("{} / {} {} | ETA: {:}s", count, max, descr,  secs));
+                    print_over_line(format!(
+                        "{} / {} {} | {}", 
+                        count, 
+                        max, 
+                        descr, 
+                        format!("ETA: {:}s", secs).cyan()
+                    ));
                 }
             }
     

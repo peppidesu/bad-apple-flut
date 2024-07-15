@@ -1,27 +1,25 @@
 use rayon::prelude::*;
 
 use crate::{
-    frame::{Frame,FrameData}, 
-    pixel::Pixel, 
-    args::CompressionLevelArg
+    args::CompressionLevelArg, frame::{Frame,FrameData}, Result, Error, Pixel
 };
 
-pub trait VideoCompressor {
-    fn compress_frame(&mut self, new_frame: &Frame) -> FrameData;
-}
-
-pub struct DeltaCompressorV1 {
+#[derive(Clone)]
+pub struct VideoCompressorV1 {
     last_frame: Option<Frame>,
     level: CompressionLevelV1,
     debug: bool,
 }
 
-impl DeltaCompressorV1 {
-    pub fn new(level: CompressionLevelV1, debug: bool) -> Self {
-        Self { last_frame: None, level: level, debug }
+impl VideoCompressorV1 {
+    pub fn new(level: CompressionLevelArg, debug: bool) -> Result<Self> {
+        Ok(Self { 
+            last_frame: None, 
+            level: level.try_into()?,
+            debug 
+        })
     }
-
-    pub fn delta(&self, old: &Frame, new: &Frame) -> FrameData {                
+    fn delta(&self, old: &Frame, new: &Frame) -> FrameData {                
         let px_vec: Vec<_> = old.data().into_par_iter()
             .zip(new.data().into_par_iter())
             .enumerate()
@@ -112,15 +110,16 @@ impl CompressionLevelV1 {
     }
 }
 
-impl From<CompressionLevelArg> for CompressionLevelV1 {
-    fn from(arg: CompressionLevelArg) -> Self {
+impl TryFrom<CompressionLevelArg> for CompressionLevelV1 {
+    type Error = Error;
+    fn try_from(arg: CompressionLevelArg) -> Result<Self> {
         match arg {
-            CompressionLevelArg::None => Self::None,
-            CompressionLevelArg::Low => Self::Low,
-            CompressionLevelArg::Medium => Self::Medium,
-            CompressionLevelArg::High => Self::High,
-            CompressionLevelArg::TrashCompactor => Self::TrashCompactor,
+            CompressionLevelArg::None => Ok(Self::None),
+            CompressionLevelArg::Low => Ok(Self::Low),
+            CompressionLevelArg::Medium => Ok(Self::Medium),
+            CompressionLevelArg::High => Ok(Self::High),
+            CompressionLevelArg::TrashCompactor => Ok(Self::TrashCompactor),
+            _ => Err(Error::InvalidArgs("Invalid compression level".to_string()))
         }
     }
 }
-

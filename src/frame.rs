@@ -146,3 +146,26 @@ impl FrameData {
         }
     }
 }
+
+impl From<FrameData> for Frame {
+    fn from(value: FrameData) -> Self {
+        match value {
+            FrameData::Full { width, height, data } => Self {
+                width: width as usize,
+                height: height as usize,
+                data: data.into(),
+            },
+            FrameData::Delta(d) => {
+                let width = d.iter().map(|p| p.x).max().unwrap_or(0) + 1;
+                let height = d.iter().map(|p| p.y).max().unwrap_or(0) + 1;
+                let mut data: Vec<Color> = vec![Color::new(128, 128, 128); width * height].into();
+                for p in d {
+                    let i = p.y * width + p.x;
+                    data[i] = p.color;
+                }
+                Self { width, height, data: data.into_boxed_slice() }
+            },
+            FrameData::Empty => Self { width: 0, height: 0, data: Vec::new().into() }
+        }
+    }
+}
