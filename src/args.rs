@@ -11,14 +11,25 @@ pub struct Args {
     #[serde(skip)]
     pub input: String,
     
+    /// Target section from config file to use
+    #[clap(long)]
+    #[serde(skip_serializing)]
+    pub target: Option<String>,
+
     /// Host to connect to
     #[clap(long)]
     #[serde(skip_serializing)]    
     pub host: Option<String>,    
     
+    /// Protocol to use for sending frames
     #[clap(long)]
-    #[serde(skip_serializing)]
-    pub target: Option<String>,
+    #[serde(default)]
+    pub protocol: Protocol,
+    
+    /// Target canvas (if supported)
+    #[clap(long)]
+    #[serde(default)]
+    pub canvas: u8,
 
     /// Horizontal offset (in px)
     #[clap(short)]  
@@ -42,16 +53,26 @@ pub struct Args {
     #[clap(long)]
     pub fps: Option<f64>,
     
-    /// Protocol to use for sending frames
-    #[clap(long)]
-    #[serde(default)]
-    pub protocol: Protocol,
+    /// Number of threads to use for sending pixels
+    #[clap(long)]    
+    pub send_threads: usize,    
+
+        /// Number of threads to use for compressing frames
+        #[clap(long)]
+        pub compress_threads: usize,
     
-    /// Target canvas (if supported)
+    /// Compression algorithm to use
     #[clap(long)]
-    #[serde(default)]
-    pub canvas: u8,
+    pub compression_algorithm: CompressionAlgConfig,
     
+    /// Compression level [none|low|medium|high|trash-compactor|number]
+    #[clap(long)]
+    pub compression_level: String,
+
+    /// Number of frames to group together when compressing ahead-of-time
+    #[clap(long)]    
+    pub aot_frame_group_size: usize,
+
     /// Ignore frame cache
     #[clap(long, action=clap::ArgAction::SetTrue)]
     #[serde(default)]
@@ -66,26 +87,6 @@ pub struct Args {
     #[clap(long, action=clap::ArgAction::SetTrue)]
     #[serde(default)]
     pub debug: bool,
-    
-    /// Number of threads to use for sending pixels
-    #[clap(long)]    
-    pub send_threads: usize,    
-    
-    /// Number of frames to group together when compressing ahead-of-time
-    #[clap(long)]    
-    pub aot_frame_group_size: usize,
-    
-    /// Compression algorithm to use
-    #[clap(long)]
-    pub compression_algorithm: CompressionAlgConfig,
-    
-    /// Compression level [none|low|medium|high|trash-compactor|number]
-    #[clap(long)]
-    pub compression_level: String,
-
-    /// Number of threads to use for compressing frames
-    #[clap(long)]
-    pub compress_threads: usize,
 }
 
 impl From<Args> for CacheKey {

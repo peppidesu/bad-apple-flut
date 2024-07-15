@@ -58,14 +58,18 @@ impl VideoCompressorV2 {
 
         if priorities.len() == 0 {
             FrameData::Empty
-        } else {
-            priorities.sort_unstable_by(|a, b| b.0.cmp(&a.0));
-
-            let data: Vec<_> = priorities
-                .into_iter()
-                .take(self.level.target_pixels_per_frame)
-                .map(|(_, px)| px)
-                .collect();
+        } else {          
+            let data = match self.level.target_pixels_per_frame {
+                0 => priorities.into_iter().map(|(_, p)| p).collect(),
+                n => {
+                    priorities.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+                    priorities
+                        .into_iter()
+                        .take(n)
+                        .map(|(_, p)| p)
+                        .collect()
+                }
+            };
             FrameData::Delta(data)
         }
     }

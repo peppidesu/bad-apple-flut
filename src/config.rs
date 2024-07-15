@@ -8,7 +8,7 @@ pub struct Config {
     #[serde(default)]
     pub args: Args,
     #[serde(default)]
-    #[serde(skip_serializing)]
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub targets: HashMap<String, Target>
 }
 

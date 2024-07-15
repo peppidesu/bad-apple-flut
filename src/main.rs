@@ -83,8 +83,13 @@ fn compress_frames_to_vec(
         .into_par_iter()
         .map(|i| FrameFile::new(i))
         .collect::<Vec<_>>();
-
-    let chunks = frame_files.chunks(context.args.aot_frame_group_size);
+    
+    let chunks = frame_files.chunks(
+        match context.args.aot_frame_group_size {
+            0 => frame_files.len(),
+            n => n,
+        }
+    );
 
     let thread_pool = rayon::ThreadPoolBuilder::new()
         .num_threads(context.args.compress_threads)

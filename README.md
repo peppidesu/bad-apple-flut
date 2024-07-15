@@ -31,23 +31,49 @@ This will enable CPU-specific optimizations.
 
 ## Usage
 ```
-bad-apple-flut -i <input-file> [-x <x-offset>] [-y <y-offset>] [--width <width>] [--height <height>] 
-  [--compression <none|low|medium|high|trash-compactor|number>] [--jit] [--nocache]
+Usage: bad-apple-flut [OPTIONS]
 
 Options:
-  -i, --input <INPUT>              Input file
-  -x <X_OFFSET>                    Horizontal offset (in px) [default: 0]
-  -y <Y_OFFSET>                    Vertical offset (in px) [default: 0]
-  --width <WIDTH>                  Width (in px) [default: same as source]
-  --height <HEIGHT>                Height (in px) [default: same as source]
-  --fps <FPS>                      Frame-rate (in fps) [default: same as source]
-  --compression <COMPRESSION>      Compression level [none|low|medium|high|trash-compactor|number]
-  --canvas <CANVAS>                Canvas to draw to 
-  --nocache                        Ignore frame cache
-  --jit                            Compress frames just-in-time
-  --debug                      
-  -h, --help                       Print help
-
+  -i, --input <INPUT>
+          Input file
+      --target [<TARGET>]
+          Target section from config file to use
+      --host [<HOST>]
+          Host to connect to
+      --protocol <PROTOCOL>
+          Protocol to use for sending frames [possible values: plaintext, bin-flutties, bin-flurry]
+      --canvas <CANVAS>
+          Target canvas (if supported)
+  -x <X_OFFSET>
+          Horizontal offset (in px)
+  -y <Y_OFFSET>
+          Vertical offset (in px)
+      --width [<WIDTH>]
+          Width (in px) [default: same as source]
+      --height [<HEIGHT>]
+          Height (in px) [default: same as source]
+      --fps [<FPS>]
+          Frame-rate (in fps) [default: same as source]
+      --send-threads <SEND_THREADS>
+          Number of threads to use for sending pixels
+      --compress-threads <COMPRESS_THREADS>
+          Number of threads to use for compressing frames
+      --compression-algorithm <COMPRESSION_ALGORITHM>
+          Compression algorithm to use [possible values: v1, v2]
+      --compression-level <COMPRESSION_LEVEL>
+          Compression level [none|low|medium|high|trash-compactor|number]
+      --aot-frame-group-size <AOT_FRAME_GROUP_SIZE>
+          Number of frames to group together when compressing ahead-of-time
+      --nocache
+          Ignore frame cache
+      --jit
+          Compress frames just-in-time
+      --debug
+          Enable debug output
+  -h, --help
+          Print help
+  -V, --version
+          Print version
 ```
 The input file can be any video format so long as ffmpeg supports it.
 
@@ -99,6 +125,12 @@ To avoid this problem, or to reduce the amount of RAM bad-apple-flut uses in gen
 the `--jit` flag to instead compress frames just-in-time. This will defer frame compression until 
 right before the frame gets sent to the server. 
 
+#### Ahead-of-time frame group size
+Frame groups are processed in parallel by the thread pool. The size of these groups is controlled by
+the `aot_frame_group_size` option. Smaller groups improve load-balancing, but introduces full frame 
+blanks at group boundaries which increases spikes in network usage.
+
+A frame group size of 0 disables multithreading altogether.
 
 ### Canvas 
 If the chosen protocol supports it, a canvas can be specified with `--canvas <ID>` to target a
@@ -110,29 +142,50 @@ specific canvas on the server.
 | `bin-flutties`   | ✅ Yes                | 0 - 16          |
 | `bin-flurry`     | ✅ Yes                | 0 - 255         |
 
+### Protocol
+The protocol option defines the format in which pixels are sent to the server. The following protocols
+are supported:
+  - `plaintext` — Default plaintext TCP protocol (`PX xxxx yyyy rrggbb`)
+  - `bin-flutties` — Binary protocol used by the [Flutties server](https://github.com/itepastra/flutties) (obsolete) (`(B0-BF) XHXL YHYL RR GG BB`)
+  - `bin-flurry` — Binary protocol used by the [Flurry server](https://github.com/itepastra/flurry) (`80 (00-FF) XLXH YLYH RR GG BB`)
+
+
 ## Configuration
 The configuration file is stored in `<config_dir>/bad-apple-flut/config.toml`, where `<config_dir>` 
 is the users config directory (see https://docs.rs/dirs/latest/dirs/fn.config_dir.html).
 
 ```toml
-host = "localhost:1234"
-send_threads = 8
-compress_threads = 8
+[args]
+target = example
+## `target` overrides `host`, `protocol` and `canvas` specified in the `[args]` section
+#host = "foo.bar.com:1234"
+#protocol = "plaintext"
+#canvas = 0
+
+#x_offset = 0
+#y_offset = 0
+#width =
+#height =
+#fps =
+
+send_threads = 4
+compress_threads = 4
+
 aot_frame_group_size = 100
-protocol = "plaintext"
 compression_algorithm = "v2"
+compression_level = "768"
+
+#nocache = false
+#jit = false
+#debug = false
+
+# Example target specification
+[targets.example]
+host = "pixelflut.example.com:1234"
+protocol = "bin-flutties"
+canvas = 1
 ```
 
-- `host` — Address of the pixelflut server to send the video to.
-- `send_threads` — Size of the thread pool used to send pixels to the server.
-- `compress_threads` — Size of the thread pool used for ahead-of-time video compression. 
-- `aot_frame_group_size` — Size of frame groups in ahead-of-time compression. Frame groups are
-  processed in parallel by the thread pool. Smaller groups improve load-balancing, but introduces
-  full frame blanks at group boundaries which increases spikes in network usage.
-- `protocol` — Protocol to use. Must be supported by the server. Available protocols:
-  - `plaintext` — Default plaintext TCP protocol (`PX xxxx yyyy rrggbb`)
-  - `bin-flutties` — Binary protocol used by the [Flutties server](https://github.com/itepastra/flutties) (obsolete) (`(B0-BF) XHXL YHYL RR GG BB`)
-  - `bin-flurry` — Binary protocol used by the [Flurry server](https://github.com/itepastra/flurry) (`80 (00-FF) XLXH YLYH RR GG BB`)
 
 ## Contributions
 Contributions to the project are welcome, so feel free to suggest changes or report issues.
