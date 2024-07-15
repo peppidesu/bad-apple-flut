@@ -304,6 +304,15 @@ pub fn verify_args(args: &Args) -> Result<()> {
     Ok(())
 }
 
+fn connect(host: &str) -> Arc<Mutex<TcpStream>> {
+    let stream = TcpStream::connect(&host).unwrap_or_else(|e| {
+        eprintln!("{} Failed to connect to {}: {}", "::".red(), host, e);
+        std::process::exit(1);
+    });
+
+    Arc::new(Mutex::new(stream))
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {    
     let config = Config::load().unwrap_or_else(
@@ -355,7 +364,6 @@ async fn main() -> Result<()> {
 
         write_cache_id(&cache_key)?;
     }
-    
 
     let metadata = VideoMetadata::load()?;
 
@@ -390,13 +398,7 @@ async fn main() -> Result<()> {
     let host = context.args.host.clone().unwrap();
     
     if context.args.jit {
-        println!("{}", host);
-        context.stream = Some(Arc::new(Mutex::new(
-            TcpStream::connect(&host).unwrap_or_else(|e| {
-                eprintln!("Failed to connect to {}: {}", host, e);
-                std::process::exit(1);
-            }),
-        )));
+        context.stream = Some(connect(&host));
         println!("{} Playing video on {}", "::".blue(), host);
         loop_just_in_time(&context, compressor)?;
     } else {
@@ -405,15 +407,8 @@ async fn main() -> Result<()> {
             std::process::exit(1);
         });
 
-        context.stream = Some(Arc::new(Mutex::new(
-            TcpStream::connect(&host).unwrap_or_else(|e| {
-                eprintln!("Failed to connect to {}: {}", host, e);
-                std::process::exit(1);
-            }),
-        )));
-
+        context.stream = Some(connect(&host));
         println!("{} Playing video on {}", "::".blue(), host);
-
         loop_ahead_of_time(&context, frame_data_vec)?;
     }
 

@@ -1,6 +1,6 @@
 [package]
 name = "bad-apple-flut"
-version = "1.0.0-alpha.1"
+version = "1.0.0"
 edition = "2021"
 authors = ["peppidesu"]
 description = "A video player for pixelflut written in Rust"
@@ -30,8 +30,7 @@ test-case = "3.3.1"
 criterion = "0.5.1"
 rand = "0.8.5"
 
-[profile.prod]
-inherits = "release"
+[profile.release]
 codegen-units = 1
 lto = "thin"
 strip = "symbols"
