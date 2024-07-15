@@ -154,7 +154,7 @@ are supported:
 The configuration file is stored in `<config_dir>/bad-apple-flut/config.toml`, where `<config_dir>` 
 is the users config directory (see https://docs.rs/dirs/latest/dirs/fn.config_dir.html).
 
-```toml
+```ini
 [args]
 target = example
 ## `target` overrides `host`, `protocol` and `canvas` specified in the `[args]` section
