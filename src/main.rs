@@ -304,11 +304,19 @@ pub fn verify_args(args: &Args) -> Result<()> {
     Ok(())
 }
 
-fn connect(host: &str) -> Arc<Mutex<TcpStream>> {
-    let stream = TcpStream::connect(&host).unwrap_or_else(|e| {
+fn connect(host: &str, protocol: &Protocol) -> Arc<Mutex<TcpStream>> {
+    let mut stream = TcpStream::connect(&host).unwrap_or_else(|e| {
         eprintln!("{} Failed to connect to {}: {}", "::".red(), host, e);
         std::process::exit(1);
     });
+
+    let preamble: &[u8] = match protocol {
+        Protocol::Plaintext => b"",
+        Protocol::BinFlutties => todo!(),
+        Protocol::BinFlurry => b"PROTOCOL binary\n",
+    };
+
+    stream.write_all(preamble).unwrap();
 
     Arc::new(Mutex::new(stream))
 }
@@ -398,7 +406,7 @@ async fn main() -> Result<()> {
     let host = context.args.host.clone().unwrap();
     
     if context.args.jit {
-        context.stream = Some(connect(&host));
+        context.stream = Some(connect(&host, &context.args.protocol));
         println!("{} Playing video on {}", "::".blue(), host);
         loop_just_in_time(&context, compressor)?;
     } else {
@@ -407,7 +415,7 @@ async fn main() -> Result<()> {
             std::process::exit(1);
         });
 
-        context.stream = Some(connect(&host));
+        context.stream = Some(connect(&host, &context.args.protocol));
         println!("{} Playing video on {}", "::".blue(), host);
         loop_ahead_of_time(&context, frame_data_vec)?;
     }
