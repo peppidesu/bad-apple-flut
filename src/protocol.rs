@@ -42,8 +42,8 @@ impl Protocol {
             Protocol::BinFlurry => {
                 buf.push(0x80);
                 buf.push(canvas);
-                buf.extend_from_slice(&x.to_le_bytes());
-                buf.extend_from_slice(&y.to_le_bytes());
+                buf.extend_from_slice(&x.to_be_bytes());
+                buf.extend_from_slice(&y.to_be_bytes());
                 buf.push(r);
                 buf.push(g);
                 buf.push(b);
